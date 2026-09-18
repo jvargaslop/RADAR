@@ -90,6 +90,14 @@ def revisar_proceso(
             log.append(("warn", f"**{etiqueta}** · {exc}"))
             return stats
 
+        if not novedades:
+            log.append((
+                "warn",
+                f"**{etiqueta}** · La Rama Judicial no devolvió actuaciones para este radicado. "
+                "Verifica que el número esté bien y que el proceso sea público.",
+            ))
+            return stats
+
         ultima = proceso.get("ultima_actuacion_fecha")
         fecha_max = ultima
 
@@ -118,7 +126,12 @@ def revisar_proceso(
             db.actualizar_fecha_proceso(client, proceso["id"], fecha_max)
 
         if stats["nuevas"] == 0:
-            log.append(("info", f"**{etiqueta}** · Sin novedades."))
+            mas_reciente = max(n["fecha_actuacion"] for n in novedades)
+            log.append((
+                "info",
+                f"**{etiqueta}** · Consulta correcta: {len(novedades)} actuación(es) en la Rama Judicial, "
+                f"la más reciente del {mas_reciente}. Ninguna es nueva desde tu última revisión.",
+            ))
 
     except Exception as exc:  # noqa: BLE001 - un proceso con error no detiene a los demás
         stats["errores"] += 1
