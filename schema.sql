@@ -1,13 +1,55 @@
+-- =========================================================================
+-- Claria Radar · Esquema multiusuario
 -- Ejecutar en Supabase: SQL Editor -> New query -> Run
+--
+-- Si ya habías corrido el esquema anterior (versión personal) y no tienes
+-- datos que conservar, descomenta la siguiente línea para empezar limpio:
+-- drop table if exists actuaciones, procesos, perfiles cascade;
+-- =========================================================================
 
+-- ---------------------------------------------------------------------------
+-- 1) Perfiles: datos de WhatsApp y plan de cada cliente
+-- ---------------------------------------------------------------------------
+create table if not exists perfiles (
+  user_id           uuid primary key references auth.users(id) on delete cascade,
+  telefono          text,                          -- +573001234567
+  callmebot_apikey  text,                          -- clave propia de cada cliente
+  plan              text   not null default 'gratis',
+  max_procesos      int    not null default 3,     -- límite del plan
+  created_at        timestamptz not null default now()
+);
+
+-- Crea el perfil automáticamente cuando alguien se registra
+create or replace function crear_perfil() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  insert into perfiles (user_id) values (new.id) on conflict do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function crear_perfil();
+
+-- Usuarios que ya existían antes de este esquema
+insert into perfiles (user_id) select id from auth.users on conflict do nothing;
+
+-- ---------------------------------------------------------------------------
+-- 2) Procesos y actuaciones (cada proceso pertenece a un usuario)
+-- ---------------------------------------------------------------------------
 create table if not exists procesos (
   id                     bigint generated always as identity primary key,
-  radicado               varchar(23) not null unique
-                         check (radicado ~ '^[0-9]{23}$'),
+  user_id                uuid not null default auth.uid()
+                         references auth.users(id) on delete cascade,
+  radicado               varchar(23) not null check (radicado ~ '^[0-9]{23}$'),
   alias                  text,
   ultima_actuacion_fecha date,
-  estado                 text not null default 'activo',
-  created_at             timestamptz not null default now()
+  estado                 text not null default 'activo'
+                         check (estado in ('activo', 'pausado')),
+  created_at             timestamptz not null default now(),
+  unique (user_id, radicado)   -- dos clientes pueden vigilar el mismo radicado
 );
 
 create table if not exists actuaciones (
@@ -20,12 +62,66 @@ create table if not exists actuaciones (
   created_at       timestamptz not null default now()
 );
 
+create index if not exists idx_procesos_user         on procesos (user_id);
+create index if not exists idx_procesos_estado       on procesos (estado);
 create index if not exists idx_actuaciones_proceso   on actuaciones (proceso_id, fecha_actuacion);
 create index if not exists idx_actuaciones_pendiente on actuaciones (proceso_id) where notificado = false;
-create index if not exists idx_procesos_estado       on procesos (estado);
+-- Blindaje contra duplicados aunque dos ciclos corran a la vez
+create unique index if not exists uq_actuacion_unica
+  on actuaciones (proceso_id, fecha_actuacion, md5(actuacion));
 
--- Seguridad: el worker corre en tu servidor, así que usa la clave "service_role"
--- en SUPABASE_KEY (nunca en un frontend). Con RLS activo y sin políticas, la
--- clave anónima no podrá leer ni escribir estas tablas.
+-- ---------------------------------------------------------------------------
+-- 3) Límite de procesos por plan (se valida en la base de datos, no solo en la app)
+-- ---------------------------------------------------------------------------
+create or replace function validar_limite_procesos() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare
+  limite   int;
+  actuales int;
+begin
+  select max_procesos into limite from perfiles where user_id = new.user_id;
+  select count(*) into actuales from procesos where user_id = new.user_id;
+  if actuales >= coalesce(limite, 3) then
+    raise exception 'LIMITE_PROCESOS: tu plan permite % procesos', coalesce(limite, 3);
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_limite_procesos on procesos;
+create trigger trg_limite_procesos
+  before insert on procesos
+  for each row execute function validar_limite_procesos();
+
+-- ---------------------------------------------------------------------------
+-- 4) Seguridad: Row Level Security (cada usuario solo ve lo suyo)
+-- ---------------------------------------------------------------------------
+alter table perfiles    enable row level security;
 alter table procesos    enable row level security;
 alter table actuaciones enable row level security;
+
+drop policy if exists perfiles_select on perfiles;
+drop policy if exists perfiles_update on perfiles;
+drop policy if exists procesos_propios on procesos;
+drop policy if exists actuaciones_propias on actuaciones;
+
+create policy perfiles_select on perfiles
+  for select using (user_id = auth.uid());
+
+create policy perfiles_update on perfiles
+  for update using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+create policy procesos_propios on procesos
+  for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+create policy actuaciones_propias on actuaciones
+  for all
+  using (exists (select 1 from procesos p where p.id = proceso_id and p.user_id = auth.uid()))
+  with check (exists (select 1 from procesos p where p.id = proceso_id and p.user_id = auth.uid()));
+
+-- El cliente solo puede editar su teléfono y su clave; NUNCA su plan ni su límite
+revoke all on perfiles from anon, authenticated;
+grant select on perfiles to authenticated;
+grant update (telefono, callmebot_apikey) on perfiles to authenticated;
+
+-- El worker usa la clave service_role, que ignora RLS. Nunca la pongas en la app web.

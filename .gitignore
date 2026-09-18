@@ -1,0 +1,7 @@
+.env
+PSW.txt
+SUPABASE.txt
+__pycache__/
+*.pyc
+.venv/
+.streamlit/secrets.toml

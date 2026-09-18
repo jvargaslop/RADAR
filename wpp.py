@@ -1,7 +1,12 @@
-"""Notificaciones por WhatsApp vía CallMeBot + tarjeta visual estilo Legal Design Claria."""
+"""Notificaciones por WhatsApp vía CallMeBot + tarjeta visual estilo Legal Design Claria.
+
+Cada cliente usa SU PROPIO teléfono y SU PROPIA clave de CallMeBot
+(se guardan en la tabla `perfiles`, no en el .env).
+"""
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 from urllib.parse import quote
 
@@ -16,15 +21,36 @@ LINEA = "━━━━━━━━━━━━━━━"
 
 
 # --------------------------------------------------------------------------- #
+# Validación
+# --------------------------------------------------------------------------- #
+def normalizar_telefono(telefono: str) -> str:
+    """Devuelve el teléfono en formato internacional (+573001234567) o lanza ValueError.
+
+    Acepta espacios/guiones y completa el +57 si escriben un celular colombiano
+    de 10 dígitos (3001234567).
+    """
+    limpio = re.sub(r"[^\d+]", "", telefono or "")
+    if re.fullmatch(r"3\d{9}", limpio):
+        limpio = "+57" + limpio
+    elif re.fullmatch(r"57\d{10}", limpio):
+        limpio = "+" + limpio
+    if not re.fullmatch(r"\+\d{8,15}", limpio):
+        raise ValueError(
+            "Escribe tu número en formato internacional, por ejemplo +573001234567."
+        )
+    return limpio
+
+
+# --------------------------------------------------------------------------- #
 # Envío
 # --------------------------------------------------------------------------- #
 def enviar_whatsapp(telefono: str, api_key: str, mensaje: str) -> bool:
-    """Envía `mensaje` por CallMeBot. `telefono` en formato internacional (+573001234567).
+    """Envía `mensaje` por CallMeBot. `telefono` en formato internacional.
 
     Devuelve True si CallMeBot respondió HTTP 200.
     """
     if not telefono or not api_key:
-        logger.error("CALLMEBOT_PHONE / CALLMEBOT_API_KEY no configurados.")
+        logger.error("Teléfono o clave de CallMeBot no configurados.")
         return False
 
     texto = mensaje if len(mensaje) <= MAX_CHARS else mensaje[: MAX_CHARS - 1] + "…"
@@ -46,6 +72,21 @@ def enviar_whatsapp(telefono: str, api_key: str, mensaje: str) -> bool:
 
     logger.error("CallMeBot respondió %s: %s", resp.status_code, resp.text[:200])
     return False
+
+
+def enviar_prueba(telefono: str, api_key: str) -> bool:
+    """Mensaje corto para que el cliente confirme que la conexión funciona."""
+    mensaje = "\n".join(
+        [
+            "⚖️ *CLARIA · Radar*",
+            LINEA,
+            "✅ *¡Conexión exitosa!*",
+            "Desde ahora recibirás aquí las novedades de tus procesos, explicadas en lenguaje claro.",
+            LINEA,
+            "_Verifica siempre en el expediente oficial._",
+        ]
+    )
+    return enviar_whatsapp(telefono, api_key, mensaje)
 
 
 # --------------------------------------------------------------------------- #
@@ -77,7 +118,7 @@ def formatear_tarjeta(
         estado = "🟢 *Sin acción requerida*"
 
     lineas = [
-        "⚖️ *CLARIA · Legal Watcher*",
+        "⚖️ *CLARIA · Radar*",
         LINEA,
         f"📁 *Proceso:* {alias or 'Sin alias'}",
         f"🔢 *Radicado:* {formatear_radicado(radicado)}",
