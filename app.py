@@ -44,6 +44,8 @@ ESTILO = """
 
 :root { --tinta: #1B2A41; --borde: #D9D4CB; --burdeos: #7A1F2B; }
 
+.stApp { background: #FAF8F5; color: var(--tinta); }
+
 html, body, [class*="css"], .stMarkdown, .stTextInput, .stButton {
     font-family: 'Source Sans 3', 'Segoe UI', sans-serif;
 }
@@ -72,6 +74,16 @@ h1, h2, h3 {
     border-left: 4px solid var(--tinta);
     border-radius: 6px;
     background: #FFFFFF;
+    color: var(--tinta);
+}
+[data-testid="stExpander"] summary,
+[data-testid="stExpander"] summary:hover,
+[data-testid="stExpander"] details[open] > summary {
+    background: #FFFFFF !important;
+    color: var(--tinta) !important;
+}
+[data-testid="stExpander"] :is(p, label, li, summary span, [data-testid="stMarkdownContainer"]) {
+    color: var(--tinta);
 }
 
 .stButton > button[kind="primary"],
@@ -89,6 +101,7 @@ h1, h2, h3 {
     border-radius: 6px; padding: 0.7rem 0.9rem;
 }
 [data-testid="stMetricValue"] { font-family: 'Source Serif 4', Georgia, serif; color: var(--tinta); }
+[data-testid="stMetricLabel"] * { color: #5B6577 !important; }
 </style>
 """
 st.markdown(ESTILO, unsafe_allow_html=True)
@@ -158,39 +171,74 @@ def vista_acceso(sb) -> None:
                     st.session_state["user"] = usuario
                     st.rerun()
 
-    # --- Crear cuenta ---
+    # --- Crear cuenta (con confirmación por código de 6 dígitos) ---
     with tab_crear:
-        with st.form("form_registro"):
-            email_n = st.text_input("Correo electrónico", key="reg_email")
-            clave_n = st.text_input("Contraseña (mínimo 8 caracteres)", type="password", key="reg_clave")
-            clave_r = st.text_input("Repite la contraseña", type="password", key="reg_clave2")
-            acepto = st.checkbox(
-                "Entiendo que Claria Radar es una herramienta informativa: no reemplaza "
-                "la revisión del expediente oficial ni la asesoría de un abogado."
-            )
-            crear = st.form_submit_button("Crear mi cuenta", type="primary", use_container_width=True)
-        if crear:
-            if not email_n.strip() or "@" not in email_n:
-                st.warning("⚠️ Escribe un correo válido.")
-            elif len(clave_n) < 8:
-                st.warning("⚠️ La contraseña debe tener al menos 8 caracteres.")
-            elif clave_n != clave_r:
-                st.warning("⚠️ Las contraseñas no coinciden.")
-            elif not acepto:
-                st.warning("⚠️ Debes aceptar el aviso para continuar.")
-            else:
-                try:
-                    with st.spinner("Creando tu cuenta..."):
-                        usuario, requiere_confirmacion = db.crear_cuenta(sb, email_n, clave_n)
-                except db.AuthError as exc:
-                    st.error(f"❌ {exc}")
-                except Exception as exc:  # noqa: BLE001
-                    st.error(f"❌ No se pudo crear la cuenta: {exc}")
+        pendiente = st.session_state.get("conf_email")
+        if pendiente:
+            st.info(f"📧 Enviamos un código de 6 dígitos a **{pendiente}**. Escríbelo para activar tu cuenta.")
+            with st.form("form_confirmar"):
+                codigo = st.text_input("Código de confirmación")
+                confirmar = st.form_submit_button("Confirmar y entrar", type="primary", use_container_width=True)
+            if confirmar:
+                if not codigo.strip():
+                    st.warning("⚠️ Escribe el código que llegó a tu correo.")
                 else:
-                    if requiere_confirmacion:
-                        st.success("✅ Cuenta creada. Te enviamos un correo: confírmalo y luego ingresa.")
+                    try:
+                        with st.spinner("Confirmando..."):
+                            usuario = db.confirmar_cuenta_con_codigo(sb, pendiente, codigo)
+                    except db.AuthError as exc:
+                        st.error(f"❌ {exc}")
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"❌ No se pudo confirmar: {exc}")
                     else:
+                        st.session_state.pop("conf_email", None)
                         st.session_state["user"] = usuario
+                        st.rerun()
+            c_a, c_b = st.columns(2)
+            with c_a:
+                if st.button("📨 Reenviar código", use_container_width=True):
+                    try:
+                        db.reenviar_codigo_confirmacion(sb, pendiente)
+                    except db.AuthError as exc:
+                        st.error(f"❌ {exc}")
+                    else:
+                        st.success("✅ Código reenviado.")
+            with c_b:
+                if st.button("← Usar otro correo", use_container_width=True):
+                    st.session_state.pop("conf_email", None)
+                    st.rerun()
+        else:
+            with st.form("form_registro"):
+                email_n = st.text_input("Correo electrónico", key="reg_email")
+                clave_n = st.text_input("Contraseña (mínimo 8 caracteres)", type="password", key="reg_clave")
+                clave_r = st.text_input("Repite la contraseña", type="password", key="reg_clave2")
+                acepto = st.checkbox(
+                    "Entiendo que Claria Radar es una herramienta informativa: no reemplaza "
+                    "la revisión del expediente oficial ni la asesoría de un abogado."
+                )
+                crear = st.form_submit_button("Crear mi cuenta", type="primary", use_container_width=True)
+            if crear:
+                if not email_n.strip() or "@" not in email_n:
+                    st.warning("⚠️ Escribe un correo válido.")
+                elif len(clave_n) < 8:
+                    st.warning("⚠️ La contraseña debe tener al menos 8 caracteres.")
+                elif clave_n != clave_r:
+                    st.warning("⚠️ Las contraseñas no coinciden.")
+                elif not acepto:
+                    st.warning("⚠️ Debes aceptar el aviso para continuar.")
+                else:
+                    try:
+                        with st.spinner("Creando tu cuenta..."):
+                            usuario, requiere_confirmacion = db.crear_cuenta(sb, email_n, clave_n)
+                    except db.AuthError as exc:
+                        st.error(f"❌ {exc}")
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"❌ No se pudo crear la cuenta: {exc}")
+                    else:
+                        if requiere_confirmacion:
+                            st.session_state["conf_email"] = email_n.strip().lower()
+                        else:
+                            st.session_state["user"] = usuario
                         st.rerun()
 
     # --- Recuperar contraseña (código de 6 dígitos por correo) ---
