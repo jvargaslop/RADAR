@@ -21,9 +21,9 @@ y alertas al WhatsApp de cada cliente (CallMeBot, clave propia de cada uno).
 3. Copia `_env.example` a `.env` y complétalo.
 4. Local: `pip install -r requirements.txt` y `streamlit run app.py`.
 5. Producción: despliega en Streamlit Community Cloud (o similar) con los secretos
-   `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `GEMINI_API_KEY`, `WATCHER_MODO`.
+   `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `GEMINI_API_KEY`.
 6. Revisión automática: en GitHub → Settings → Secrets → Actions agrega
-   `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `GEMINI_API_KEY`, `WATCHER_MODO`.
+   `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `GEMINI_API_KEY`.
 
 ## Planes
 Cada cliente nace con `plan = 'gratis'` y `max_procesos = 3`. Para subirlo de plan,

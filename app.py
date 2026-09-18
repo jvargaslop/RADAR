@@ -8,8 +8,6 @@ cada sesión solo puede leer y escribir lo suyo.
 """
 from __future__ import annotations
 
-import os
-
 from dotenv import load_dotenv
 
 load_dotenv()  # antes de importar módulos que leen el entorno
@@ -376,10 +374,6 @@ def _pintar_log(log: list[tuple[str, str]]) -> None:
 
 def vista_revision(sb, perfil: dict) -> None:
     encabezado("🔄 Ejecutar revisión", "Busca novedades, las resume con IA y te avisa por WhatsApp.")
-
-    modo = os.getenv("WATCHER_MODO", "mock").strip().lower()
-    if modo != "real":
-        st.warning("🧪 Modo demostración: las actuaciones son de ejemplo, no del expediente real.")
 
     if not whatsapp_configurado(perfil):
         st.error("❌ Conecta tu WhatsApp en **📲 Mi WhatsApp** para recibir las alertas.")
