@@ -263,6 +263,18 @@ def eliminar_proceso(client: Client, proceso_id: int) -> None:
     client.table("procesos").delete().eq("id", proceso_id).execute()
 
 
+def actualizar_info_proceso(client: Client, proceso_id: int, info: dict[str, str]) -> None:
+    """Guarda juzgado, partes y clase del proceso (solo los datos que vengan con valor)."""
+    campos = {
+        "despacho": info.get("despacho"),
+        "partes": info.get("partes"),
+        "clase_proceso": info.get("clase"),
+    }
+    campos = {k: v for k, v in campos.items() if v}
+    if campos:
+        client.table("procesos").update(campos).eq("id", proceso_id).execute()
+
+
 def actualizar_fecha_proceso(client: Client, proceso_id: int, fecha: str) -> None:
     client.table("procesos").update({"ultima_actuacion_fecha": fecha}).eq("id", proceso_id).execute()
 

@@ -318,6 +318,15 @@ def vista_procesos(sb, perfil: dict) -> None:
         alias = p.get("alias") or "Sin alias"
         with st.expander(f"{'⏸️' if pausado else '📁'} {alias}"):
             st.markdown(f"**Radicado:** `{wpp.formatear_radicado(p['radicado'])}`")
+            if p.get("despacho"):
+                st.markdown(f"**🏛️ Juzgado:** {wpp._legible(p['despacho'])}")
+            if p.get("clase_proceso"):
+                st.markdown(f"**📂 Clase:** {wpp._legible(p['clase_proceso'])}")
+            lineas_partes = wpp.formatear_partes(p.get("partes"), max_chars=600)
+            if lineas_partes:
+                st.markdown("**👥 Partes:**")
+                for linea in lineas_partes:
+                    st.markdown(linea.replace("   • ", "- "))
             c1, c2, c3 = st.columns(3)
             c1.markdown(f"**ID:** {p['id']}")
             c2.markdown(f"**Última actuación:** {p.get('ultima_actuacion_fecha') or '—'}")

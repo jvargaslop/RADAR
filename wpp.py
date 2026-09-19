@@ -100,12 +100,52 @@ def formatear_radicado(radicado: str) -> str:
     return f"{r[:5]}-{r[5:7]}-{r[7:9]}-{r[9:12]}-{r[12:16]}-{r[16:21]}-{r[21:]}"
 
 
+_PARTICULAS = {"de", "del", "la", "las", "los", "y", "e", "el"}
+_ES_SIGLA = re.compile(r"(?:[a-zñ]\.){2,}[a-zñ]?\.?")
+
+
+def _legible(texto: str) -> str:
+    """'JUAN PÉREZ DE LA CRUZ' -> 'Juan Pérez de la Cruz' (solo si viene todo en mayúsculas)."""
+    t = " ".join((texto or "").split())
+    if t and t == t.upper():
+        palabras = t.lower().split()
+        t = " ".join(
+            p.upper() if _ES_SIGLA.fullmatch(p)
+            else p if (i and p in _PARTICULAS)
+            else p.capitalize()
+            for i, p in enumerate(palabras)
+        )
+    return t
+
+
+def formatear_partes(partes: str | None, max_chars: int = 350) -> list[str]:
+    """Convierte 'Demandante: A | Demandado: B' en viñetas cortas para WhatsApp."""
+    items = [x.strip() for x in (partes or "").split("|") if x.strip()]
+    lineas: list[str] = []
+    total = 0
+    for it in items:
+        if ":" in it:
+            rol, nombre = it.split(":", 1)
+            linea = f"   • {_legible(rol)}: {_legible(nombre)}"
+        else:
+            linea = f"   • {_legible(it)}"
+        if total + len(linea) > max_chars:
+            lineas.append("   • …")
+            break
+        lineas.append(linea)
+        total += len(linea)
+    return lineas
+
+
 def formatear_tarjeta(
     alias: str | None,
     radicado: str,
     fecha: str,
     actuacion: str,
     resumen: dict[str, Any],
+    despacho: str | None = None,
+    partes: str | None = None,
+    clase: str | None = None,
 ) -> str:
     """Construye la tarjeta de WhatsApp (negritas con *...*, cursiva con _..._)."""
     requiere = bool(resumen.get("requiere_accion"))
@@ -122,6 +162,16 @@ def formatear_tarjeta(
         LINEA,
         f"📁 *Proceso:* {alias or 'Sin alias'}",
         f"🔢 *Radicado:* {formatear_radicado(radicado)}",
+    ]
+    if despacho:
+        lineas.append(f"🏛️ *Juzgado:* {_legible(despacho)}")
+    if clase:
+        lineas.append(f"📂 *Clase:* {_legible(clase)}")
+    lineas_partes = formatear_partes(partes)
+    if lineas_partes:
+        lineas.append("👥 *Partes:*")
+        lineas += lineas_partes
+    lineas += [
         f"📅 *Fecha:* {fecha}",
         LINEA,
         f"📌 *Tipo:* {resumen.get('tipo_auto') or 'Sin clasificar'}",

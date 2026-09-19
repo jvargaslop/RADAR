@@ -2,10 +2,27 @@
 -- Claria Radar · Esquema multiusuario
 -- Ejecutar en Supabase: SQL Editor -> New query -> Run
 --
--- Si ya habías corrido el esquema anterior (versión personal) y no tienes
--- datos que conservar, descomenta la siguiente línea para empezar limpio:
--- drop table if exists actuaciones, procesos, perfiles cascade;
+-- Este script se puede ejecutar varias veces sin problema.
 -- =========================================================================
+
+-- ---------------------------------------------------------------------------
+-- 0) Migración: si existen las tablas de la versión personal (sin user_id),
+--    se eliminan para recrearlas con el modelo multiusuario. Esos datos no
+--    tienen dueño, así que no se pueden conservar. Si tus tablas ya son las
+--    nuevas, este bloque no hace nada.
+-- ---------------------------------------------------------------------------
+do $$
+begin
+  if exists (select 1 from information_schema.tables
+             where table_schema = 'public' and table_name = 'procesos')
+     and not exists (select 1 from information_schema.columns
+                     where table_schema = 'public' and table_name = 'procesos'
+                       and column_name = 'user_id') then
+    drop table if exists actuaciones cascade;
+    drop table if exists procesos cascade;
+  end if;
+end
+$$;
 
 -- ---------------------------------------------------------------------------
 -- 1) Perfiles: datos de WhatsApp y plan de cada cliente
@@ -45,12 +62,20 @@ create table if not exists procesos (
                          references auth.users(id) on delete cascade,
   radicado               varchar(23) not null check (radicado ~ '^[0-9]{23}$'),
   alias                  text,
+  despacho               text,   -- juzgado donde cursa
+  partes                 text,   -- demandante / demandado
+  clase_proceso          text,
   ultima_actuacion_fecha date,
   estado                 text not null default 'activo'
                          check (estado in ('activo', 'pausado')),
   created_at             timestamptz not null default now(),
   unique (user_id, radicado)   -- dos clientes pueden vigilar el mismo radicado
 );
+
+-- Para bases ya creadas antes de esta versión (no hace nada si las columnas existen)
+alter table procesos add column if not exists despacho      text;
+alter table procesos add column if not exists partes        text;
+alter table procesos add column if not exists clase_proceso text;
 
 create table if not exists actuaciones (
   id               bigint generated always as identity primary key,
@@ -125,3 +150,6 @@ grant select on perfiles to authenticated;
 grant update (telefono, callmebot_apikey) on perfiles to authenticated;
 
 -- El worker usa la clave service_role, que ignora RLS. Nunca la pongas en la app web.
+
+-- Recarga la caché de la API para que las tablas nuevas se vean de inmediato
+notify pgrst, 'reload schema';

@@ -38,12 +38,37 @@ def _notificar(
         fecha=fila["fecha_actuacion"],
         actuacion=fila["actuacion"],
         resumen=fila.get("resumen_json") or {},
+        despacho=proceso.get("despacho"),
+        partes=proceso.get("partes"),
+        clase=proceso.get("clase_proceso"),
     )
     enviado = wpp.enviar_whatsapp(telefono, api_key, mensaje)
     if enviado:
         db.marcar_notificado(client, fila["id"])
     time.sleep(pausa)
     return enviado
+
+
+def _guardar_info(client: Client, proceso: dict, info: dict[str, str]) -> None:
+    """Guarda juzgado/partes/clase si cambiaron y actualiza el dict en memoria
+    (así las tarjetas de esta misma revisión ya los incluyen)."""
+    nuevos = {
+        "despacho": info.get("despacho") or proceso.get("despacho"),
+        "partes": info.get("partes") or proceso.get("partes"),
+        "clase_proceso": info.get("clase") or proceso.get("clase_proceso"),
+    }
+    cambios = {k: v for k, v in nuevos.items() if v and v != proceso.get(k)}
+    if not cambios:
+        return
+    try:
+        db.actualizar_info_proceso(
+            client,
+            proceso["id"],
+            {"despacho": cambios.get("despacho"), "partes": cambios.get("partes"), "clase": cambios.get("clase_proceso")},
+        )
+    except Exception:  # noqa: BLE001 - dato accesorio: no debe frenar la revisión
+        pass
+    proceso.update(cambios)
 
 
 def _seleccionar_candidatas(novedades: list[dict], ultima: Optional[str]) -> list[dict]:
@@ -84,11 +109,15 @@ def revisar_proceso(
 
         # 2) Consultar novedades en la Rama Judicial
         try:
-            novedades = watcher.consultar_novedades(proceso["radicado"])
+            datos = watcher.consultar(
+                proceso["radicado"], con_detalle=not proceso.get("clase_proceso")
+            )
         except watcher.WatcherError as exc:
             stats["errores"] += 1
             log.append(("warn", f"**{etiqueta}** · {exc}"))
             return stats
+        novedades = datos["actuaciones"]
+        _guardar_info(client, proceso, datos["info"])
 
         if not novedades:
             log.append((
