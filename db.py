@@ -132,6 +132,26 @@ def crear_cuenta(client: Client, email: str, password: str) -> tuple[Optional[di
     return None, True
 
 
+def confirmar_cuenta_con_codigo(client: Client, email: str, codigo: str) -> dict[str, str]:
+    """Confirma el correo con el código de 6 dígitos y deja la sesión iniciada."""
+    try:
+        res = client.auth.verify_otp(
+            {"email": email.strip().lower(), "token": codigo.strip(), "type": "signup"}
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise AuthError(_traducir_auth(exc)) from exc
+    if not res.user or not res.session:
+        raise AuthError("No se pudo confirmar la cuenta. Solicita un código nuevo.")
+    return _usuario_dict(res.user)
+
+
+def reenviar_codigo_confirmacion(client: Client, email: str) -> None:
+    try:
+        client.auth.resend({"type": "signup", "email": email.strip().lower()})
+    except Exception as exc:  # noqa: BLE001
+        raise AuthError(_traducir_auth(exc)) from exc
+
+
 def cerrar_sesion(client: Client) -> None:
     try:
         client.auth.sign_out()
