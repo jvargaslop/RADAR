@@ -17,8 +17,9 @@ import os
 import time
 from typing import Any
 
-import google.generativeai as genai
 from dotenv import load_dotenv
+from google import genai
+from google.genai import types
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -57,18 +58,18 @@ Contexto del proceso: {contexto}
 # --------------------------------------------------------------------------- #
 # Internos
 # --------------------------------------------------------------------------- #
-_configurado = False
+_cliente: "genai.Client | None" = None
 
 
-def _configurar() -> None:
-    global _configurado
-    if _configurado:
-        return
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("Falta GEMINI_API_KEY en el archivo .env")
-    genai.configure(api_key=api_key)
-    _configurado = True
+def _configurar() -> "genai.Client":
+    """Crea (una sola vez) el cliente de Gemini con la clave del entorno."""
+    global _cliente
+    if _cliente is None:
+        api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("Falta GEMINI_API_KEY en el archivo .env")
+        _cliente = genai.Client(api_key=api_key)
+    return _cliente
 
 
 def _modelos() -> list[str]:
@@ -130,15 +131,15 @@ def _descubrir_modelos() -> list[str]:
     """Modelos 'flash' de texto disponibles para esta clave (estables primero)."""
     try:
         nombres = [
-            m.name.replace("models/", "")
-            for m in genai.list_models()
-            if "generateContent" in (m.supported_generation_methods or [])
+            (m.name or "").replace("models/", "")
+            for m in _configurar().models.list()
+            if not m.supported_actions or "generateContent" in m.supported_actions
         ]
     except Exception as exc:  # noqa: BLE001
         logger.warning("No se pudieron listar los modelos de Gemini: %s", str(exc)[:200])
         return []
     flash = [n for n in nombres if "flash" in n and not any(x in n for x in _EXCLUIR)]
-    flash.sort(key=lambda n: ("preview" in n, [-ord(c) for c in n]))  # estables primero, nombres más nuevos antes
+    flash.sort(key=lambda n: ("preview" in n, [-ord(c) for c in n]))  # estables primero, más nuevos antes
     return flash
 
 
@@ -155,17 +156,16 @@ def _es_modelo_inexistente(msg: str) -> bool:
 def _intentar(nombre: str, prompt: str) -> tuple[dict[str, Any] | None, bool]:
     """Prueba un modelo. Devuelve (resultado|None, abortar_todo)."""
     global _modelo_ok
-    modelo = genai.GenerativeModel(
-        model_name=nombre,
+    config = types.GenerateContentConfig(
         system_instruction=SYSTEM_INSTRUCTION,
-        generation_config=genai.GenerationConfig(
-            response_mime_type="application/json",
-            temperature=0.2,
-        ),
+        response_mime_type="application/json",
+        temperature=0.2,
     )
     for intento in range(1, REINTENTOS_POR_MODELO + 1):
         try:
-            respuesta = modelo.generate_content(prompt)
+            respuesta = _configurar().models.generate_content(
+                model=nombre, contents=prompt, config=config
+            )
             resultado = _normalizar(json.loads(respuesta.text))
             _modelo_ok = nombre
             return resultado, False
