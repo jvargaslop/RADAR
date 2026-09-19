@@ -23,8 +23,10 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# Se puede forzar otro modelo con GEMINI_MODEL en el .env (útil si Google retira alguno).
-MODELOS_POR_DEFECTO = ["gemini-2.0-flash", "gemini-1.5-flash"]
+# Se puede forzar otro modelo con GEMINI_MODEL en el .env / Secrets (útil si Google retira alguno).
+# Si ninguno de estos existe, se descubren automáticamente los "flash" disponibles para tu clave.
+MODELOS_POR_DEFECTO = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
+_EXCLUIR = ("image", "tts", "live", "audio", "robotics", "omni", "transcribe", "embedding", "thinking", "exp")
 MAX_PALABRAS_RESUMEN = 35
 REINTENTOS_POR_MODELO = 2
 
@@ -119,6 +121,67 @@ def _resumen_de_respaldo(texto: str) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# Selección de modelo
+# --------------------------------------------------------------------------- #
+_modelo_ok: str | None = None  # último modelo que funcionó (se prueba primero)
+
+
+def _descubrir_modelos() -> list[str]:
+    """Modelos 'flash' de texto disponibles para esta clave (estables primero)."""
+    try:
+        nombres = [
+            m.name.replace("models/", "")
+            for m in genai.list_models()
+            if "generateContent" in (m.supported_generation_methods or [])
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("No se pudieron listar los modelos de Gemini: %s", str(exc)[:200])
+        return []
+    flash = [n for n in nombres if "flash" in n and not any(x in n for x in _EXCLUIR)]
+    flash.sort(key=lambda n: ("preview" in n, [-ord(c) for c in n]))  # estables primero, nombres más nuevos antes
+    return flash
+
+
+def _es_error_de_clave(msg: str) -> bool:
+    m = msg.lower()
+    return any(p in m for p in ("api key", "api_key", "permission", "403", "unauthenticated"))
+
+
+def _es_modelo_inexistente(msg: str) -> bool:
+    m = msg.lower()
+    return "404" in m or "not found" in m or "no longer available" in m or "is not supported" in m
+
+
+def _intentar(nombre: str, prompt: str) -> tuple[dict[str, Any] | None, bool]:
+    """Prueba un modelo. Devuelve (resultado|None, abortar_todo)."""
+    global _modelo_ok
+    modelo = genai.GenerativeModel(
+        model_name=nombre,
+        system_instruction=SYSTEM_INSTRUCTION,
+        generation_config=genai.GenerationConfig(
+            response_mime_type="application/json",
+            temperature=0.2,
+        ),
+    )
+    for intento in range(1, REINTENTOS_POR_MODELO + 1):
+        try:
+            respuesta = modelo.generate_content(prompt)
+            resultado = _normalizar(json.loads(respuesta.text))
+            _modelo_ok = nombre
+            return resultado, False
+        except Exception as exc:  # noqa: BLE001 - el SDK lanza varios tipos de error
+            msg = str(exc)
+            logger.warning("Gemini [%s] intento %d falló: %s", nombre, intento, msg[:300])
+            if _es_error_de_clave(msg):
+                logger.error("Problema con GEMINI_API_KEY (inválida o sin permisos).")
+                return None, True
+            if _es_modelo_inexistente(msg):
+                return None, False  # pasar al siguiente modelo
+            time.sleep(1.5 * intento)
+    return None, False
+
+
+# --------------------------------------------------------------------------- #
 # API pública
 # --------------------------------------------------------------------------- #
 def analizar_actuacion(texto_actuacion: str, contexto: str = "") -> dict[str, Any]:
@@ -130,25 +193,19 @@ def analizar_actuacion(texto_actuacion: str, contexto: str = "") -> dict[str, An
         texto=texto_actuacion,
     )
 
-    for nombre in _modelos():
-        modelo = genai.GenerativeModel(
-            model_name=nombre,
-            system_instruction=SYSTEM_INSTRUCTION,
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
-                temperature=0.2,
-            ),
-        )
-        for intento in range(1, REINTENTOS_POR_MODELO + 1):
-            try:
-                respuesta = modelo.generate_content(prompt)
-                return _normalizar(json.loads(respuesta.text))
-            except Exception as exc:  # noqa: BLE001 - SDK lanza varios tipos de error
-                msg = str(exc)
-                logger.warning("Gemini [%s] intento %d falló: %s", nombre, intento, msg[:200])
-                if "404" in msg or "not found" in msg.lower():
-                    break  # el modelo no existe: pasar al siguiente
-                time.sleep(1.5 * intento)
+    probados: list[str] = []
+    fijos = ([_modelo_ok] if _modelo_ok else []) + _modelos()
+    for fase in ("fijos", "descubiertos"):
+        nombres = fijos if fase == "fijos" else _descubrir_modelos()
+        for nombre in dict.fromkeys(nombres):
+            if nombre in probados:
+                continue
+            probados.append(nombre)
+            resultado, abortar = _intentar(nombre, prompt)
+            if resultado:
+                return resultado
+            if abortar:
+                return _resumen_de_respaldo(texto_actuacion)
 
-    logger.error("Todos los modelos fallaron; se usa resumen de respaldo.")
+    logger.error("Todos los modelos fallaron (%s); se usa resumen de respaldo.", ", ".join(probados))
     return _resumen_de_respaldo(texto_actuacion)
