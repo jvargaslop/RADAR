@@ -29,7 +29,3 @@ y alertas al WhatsApp de cada cliente (CallMeBot, clave propia de cada uno).
 Cada cliente nace con `plan = 'gratis'` y `max_procesos = 3`. Para subirlo de plan,
 edita su fila en la tabla `perfiles` (Supabase → Table Editor). Los clientes no pueden
 modificar esos campos.
-
-## Seguridad
-- Nunca subas `.env`, `PSW.txt` ni `SUPABASE.txt` a Git (ya están en `.gitignore`).
-- La clave `service_role` va solo en el worker.
