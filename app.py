@@ -291,6 +291,10 @@ def vista_acceso(sb) -> None:
 # --------------------------------------------------------------------------- #
 def _mostrar_actuacion(a: dict) -> None:
     r = a.get("resumen_json") or {}
+    if not r:  # actuación del historial inicial (sin análisis)
+        st.markdown(f"⚪ **{a['fecha_actuacion']} · Historial**")
+        st.caption(a["actuacion"][:300])
+        return
     marca = "🔴" if r.get("requiere_accion") else "🟢"
     st.markdown(f"{marca} **{a['fecha_actuacion']} · {r.get('tipo_auto') or 'Sin clasificar'}**")
     st.write(r.get("resumen_ejecutivo") or a["actuacion"])
@@ -511,6 +515,11 @@ La clave es personal: solo se usa para enviarte a ti tus propias alertas.
             value=perfil.get("callmebot_apikey") or "",
             type="password",
         )
+        resumen_on = st.checkbox(
+            "☀️ Recibir un resumen diario a las 8 a.m. (lunes a viernes)",
+            value=bool(perfil.get("resumen_diario", True)),
+            help="Un mensaje corto que confirma que tus procesos siguen vigilados, aunque no haya novedades.",
+        )
         guardar = st.form_submit_button("💾 Guardar", type="primary")
 
     if guardar:
@@ -523,11 +532,12 @@ La clave es personal: solo se usa para enviarte a ti tus propias alertas.
                 st.error(f"❌ {exc}")
             else:
                 try:
-                    db.guardar_perfil(sb, user["id"], telefono_ok, clave.strip())
+                    db.guardar_perfil(sb, user["id"], telefono_ok, clave.strip(), resumen_on)
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"❌ No se pudo guardar: {exc}")
                 else:
                     perfil["telefono"], perfil["callmebot_apikey"] = telefono_ok, clave.strip()
+                    perfil["resumen_diario"] = resumen_on
                     configurado = True
                     st.success("✅ Datos guardados. Pulsa **Enviar mensaje de prueba** para confirmar.")
 

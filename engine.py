@@ -1,7 +1,13 @@
 """Motor de revisión de Claria Radar (compartido por la app web y el worker).
 
 Flujo por proceso:
-    pendientes -> novedades (watcher) -> Gemini (ai) -> Supabase (db) -> WhatsApp (wpp)
+    pendientes -> consulta (watcher) -> novedades -> Gemini (ai) -> Supabase (db) -> WhatsApp (wpp)
+
+Una actuación es "nueva" si NO está guardada todavía en Supabase (no depende de fechas),
+así no se pierde un auto que el juzgado publique con fecha atrasada.
+
+Primera revisión de un proceso ("carga de historial"): se guarda todo el historial como
+ya conocido, sin analizar ni enviar, y solo se notifica lo más reciente.
 
 No imprime ni usa Streamlit: devuelve contadores y un log estructurado
 [(nivel, mensaje)], con nivel en {"ok", "warn", "err", "info"}.
@@ -22,6 +28,7 @@ PAUSA_ENTRE_ENVIOS = 4  # segundos; CallMeBot limita la frecuencia de mensajes
 
 Log = list[tuple[str, str]]
 Stats = dict[str, int]
+Item = tuple[dict[str, Any], str]  # (novedad, texto completo)
 
 
 def _etiqueta(proceso: dict) -> str:
@@ -64,28 +71,34 @@ def _guardar_info(client: Client, proceso: dict, info: dict[str, str]) -> None:
         db.actualizar_info_proceso(
             client,
             proceso["id"],
-            {"despacho": cambios.get("despacho"), "partes": cambios.get("partes"), "clase": cambios.get("clase_proceso")},
+            {
+                "despacho": cambios.get("despacho"),
+                "partes": cambios.get("partes"),
+                "clase": cambios.get("clase_proceso"),
+            },
         )
     except Exception:  # noqa: BLE001 - dato accesorio: no debe frenar la revisión
         pass
     proceso.update(cambios)
 
 
-def _seleccionar_candidatas(novedades: list[dict], ultima: Optional[str]) -> list[dict]:
-    """Decide qué novedades procesar.
+def _separar_primera_carga(items: list[Item], ultima: Optional[str]) -> tuple[list[Item], list[Item]]:
+    """Primera revisión de un proceso: decide qué se notifica y qué queda como historial.
 
-    - Proceso ya conocido: las de la última fecha guardada en adelante.
-    - Primera revisión: SOLO la fecha más reciente. Así, al registrar un proceso
-      antiguo no se dispara una avalancha de mensajes con todo su historial.
+    - Proceso con fecha previa (`ultima`): se notifica desde esa fecha en adelante
+      (así un proceso registrado antes de esta versión no se llena de mensajes viejos).
+    - Proceso totalmente nuevo: solo la fecha más reciente.
     """
+    if not items:
+        return [], []
     if ultima:
-        candidatas = [n for n in novedades if n["fecha_actuacion"] >= ultima]
-    elif novedades:
-        reciente = max(n["fecha_actuacion"] for n in novedades)
-        candidatas = [n for n in novedades if n["fecha_actuacion"] == reciente]
+        corte = lambda it: it[0]["fecha_actuacion"] >= ultima  # noqa: E731
     else:
-        candidatas = []
-    return sorted(candidatas, key=lambda n: n["fecha_actuacion"])
+        reciente = max(it[0]["fecha_actuacion"] for it in items)
+        corte = lambda it: it[0]["fecha_actuacion"] == reciente  # noqa: E731
+    notificar = [it for it in items if corte(it)]
+    historial = [it for it in items if not corte(it)]
+    return notificar, historial
 
 
 def revisar_proceso(
@@ -107,7 +120,7 @@ def revisar_proceso(
                 stats["enviadas"] += 1
                 log.append(("ok", f"**{etiqueta}** · ↻ Reenviada actuación pendiente del {pendiente['fecha_actuacion']}"))
 
-        # 2) Consultar novedades en la Rama Judicial
+        # 2) Consultar la Rama Judicial (actuaciones + juzgado, partes y clase)
         try:
             datos = watcher.consultar(
                 proceso["radicado"], con_detalle=not proceso.get("clase_proceso")
@@ -116,6 +129,7 @@ def revisar_proceso(
             stats["errores"] += 1
             log.append(("warn", f"**{etiqueta}** · {exc}"))
             return stats
+
         novedades = datos["actuaciones"]
         _guardar_info(client, proceso, datos["info"])
 
@@ -127,39 +141,58 @@ def revisar_proceso(
             ))
             return stats
 
-        ultima = proceso.get("ultima_actuacion_fecha")
-        fecha_max = ultima
-
-        for nov in _seleccionar_candidatas(novedades, ultima):
+        # 3) ¿Cuáles no tenemos guardadas todavía?
+        conocidas = db.claves_actuaciones(client, proceso["id"])
+        items: list[Item] = []
+        for nov in sorted(novedades, key=lambda n: n["fecha_actuacion"]):
             texto = watcher.texto_completo(nov)
-            if db.existe_actuacion(client, proceso["id"], nov["fecha_actuacion"], texto):
+            clave = (nov["fecha_actuacion"], texto)
+            if clave in conocidas:
                 continue
+            conocidas.add(clave)  # también evita duplicados dentro de la misma consulta
+            items.append((nov, texto))
 
-            # 3) Análisis con Gemini (ai.py devuelve un resumen de respaldo si falla)
+        # 4) Primera revisión: el historial se guarda en silencio
+        cargado = bool(proceso.get("historial_cargado"))
+        if cargado:
+            a_notificar, historial = items, []
+        else:
+            a_notificar, historial = _separar_primera_carga(items, proceso.get("ultima_actuacion_fecha"))
+            db.guardar_historial(
+                client, proceso["id"], [(n["fecha_actuacion"], t) for n, t in historial]
+            )
+            db.marcar_historial_cargado(client, proceso["id"])
+            proceso["historial_cargado"] = True
+            if historial:
+                log.append((
+                    "info",
+                    f"**{etiqueta}** · Historial inicial: {len(historial)} actuación(es) anteriores "
+                    "guardadas sin notificar.",
+                ))
+
+        # 5) Gemini -> Supabase -> WhatsApp, de la más antigua a la más reciente
+        for nov, texto in a_notificar:
             resumen = ai.analizar_actuacion(texto, contexto=etiqueta)
-
-            # 4) Guardar en Supabase
             fila = db.guardar_actuacion(client, proceso["id"], nov["fecha_actuacion"], texto, resumen)
             stats["nuevas"] += 1
-            if not fecha_max or nov["fecha_actuacion"] > fecha_max:
-                fecha_max = nov["fecha_actuacion"]
 
-            # 5) Alerta por WhatsApp
             if _notificar(client, proceso, fila, telefono, api_key, pausa):
                 stats["enviadas"] += 1
                 log.append(("ok", f"**{etiqueta}** · Notificada: {resumen['tipo_auto']}"))
             else:
                 log.append(("warn", f"**{etiqueta}** · Guardada, pero el mensaje no se envió (se reintentará): {resumen['tipo_auto']}"))
 
-        if fecha_max and fecha_max != ultima:
-            db.actualizar_fecha_proceso(client, proceso["id"], fecha_max)
+        # 6) Fecha de la última actuación conocida (para mostrar en la app)
+        mas_reciente = max(n["fecha_actuacion"] for n in novedades)
+        if mas_reciente != proceso.get("ultima_actuacion_fecha"):
+            db.actualizar_fecha_proceso(client, proceso["id"], mas_reciente)
+            proceso["ultima_actuacion_fecha"] = mas_reciente
 
         if stats["nuevas"] == 0:
-            mas_reciente = max(n["fecha_actuacion"] for n in novedades)
             log.append((
                 "info",
                 f"**{etiqueta}** · Consulta correcta: {len(novedades)} actuación(es) en la Rama Judicial, "
-                f"la más reciente del {mas_reciente}. Ninguna es nueva desde tu última revisión.",
+                f"la más reciente del {mas_reciente}. Ninguna es nueva.",
             ))
 
     except Exception as exc:  # noqa: BLE001 - un proceso con error no detiene a los demás

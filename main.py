@@ -1,7 +1,8 @@
 """Claria Radar · Worker automático (revisa los procesos de TODOS los clientes).
 
-Uso:      python main.py
-Programar: cron / GitHub Actions (ver .github/workflows/revision.yml)
+Uso:      python main.py            -> revisa novedades y envía las alertas
+          python main.py --resumen  -> envía el resumen diario de las 8 a.m.
+Programar: GitHub Actions (ver .github/workflows/)
 
 Requiere en el entorno: SUPABASE_URL, SUPABASE_SERVICE_KEY, GEMINI_API_KEY.
 Cada cliente recibe las alertas en su propio WhatsApp con su propia clave de CallMeBot.
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 
 from dotenv import load_dotenv
 
@@ -17,6 +19,8 @@ load_dotenv()
 
 import db  # noqa: E402
 import engine  # noqa: E402
+import resumen_diario  # noqa: E402
+import wpp  # noqa: E402
 
 ICONOS = {"ok": "✅", "warn": "⚠️ ", "err": "❌", "info": "ℹ️ "}
 
@@ -63,6 +67,36 @@ def ejecutar() -> int:
     return 0
 
 
+def ejecutar_resumen() -> int:
+    """Envía el resumen diario a cada cliente que lo tenga activado."""
+    try:
+        client = db.crear_cliente_servicio()
+        usuarios = db.obtener_usuarios_con_whatsapp(client)
+    except Exception as exc:  # noqa: BLE001
+        print(f"❌ No se pudo iniciar el resumen diario: {exc}")
+        return 1
+
+    enviados = 0
+    for perfil in usuarios:
+        if perfil.get("resumen_diario") is False:
+            continue
+        try:
+            procesos = db.obtener_procesos(client, solo_activos=True, user_id=perfil["user_id"])
+            if not procesos:
+                continue
+            texto = resumen_diario.construir_resumen(client, procesos)
+            ok = wpp.enviar_whatsapp(perfil["telefono"], perfil["callmebot_apikey"], texto)
+            enviados += int(ok)
+            print(f"{'✅' if ok else '⚠️ '} Resumen para {perfil['user_id'][:8]}… ({len(procesos)} proceso(s))")
+            time.sleep(engine.PAUSA_ENTRE_ENVIOS)
+        except Exception as exc:  # noqa: BLE001 - un cliente con error no detiene a los demás
+            logging.exception("Error en el resumen de %s", perfil.get("user_id"))
+            print(f"❌ Error: {exc}")
+
+    print(f"\n🏁 Resúmenes enviados: {enviados}")
+    return 0
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s [%(name)s] %(message)s")
-    sys.exit(ejecutar())
+    sys.exit(ejecutar_resumen() if "--resumen" in sys.argv else ejecutar())

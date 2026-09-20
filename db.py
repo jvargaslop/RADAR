@@ -29,6 +29,7 @@ PERFIL_POR_DEFECTO = {
     "callmebot_apikey": None,
     "plan": "gratis",
     "max_procesos": 3,
+    "resumen_diario": True,
 }
 
 
@@ -201,10 +202,18 @@ def obtener_perfil(client: Client, user_id: str) -> dict[str, Any]:
 
 
 def guardar_perfil(
-    client: Client, user_id: str, telefono: Optional[str], callmebot_apikey: Optional[str]
+    client: Client,
+    user_id: str,
+    telefono: Optional[str],
+    callmebot_apikey: Optional[str],
+    resumen_diario: bool = True,
 ) -> None:
     client.table("perfiles").update(
-        {"telefono": telefono, "callmebot_apikey": callmebot_apikey}
+        {
+            "telefono": telefono,
+            "callmebot_apikey": callmebot_apikey,
+            "resumen_diario": resumen_diario,
+        }
     ).eq("user_id", user_id).execute()
 
 
@@ -345,6 +354,65 @@ def obtener_actuaciones(client: Client, proceso_id: int, limite: int = 5) -> lis
         .order("fecha_actuacion", desc=True)
         .order("id", desc=True)
         .limit(limite)
+        .execute()
+    )
+    return res.data or []
+
+
+# --------------------------------------------------------------------------- #
+# Detección de novedades (sin depender de fechas) y resumen diario
+# --------------------------------------------------------------------------- #
+def claves_actuaciones(client: Client, proceso_id: int) -> set[tuple[str, str]]:
+    """Todas las actuaciones ya guardadas del proceso, como {(fecha, texto)}."""
+    res = (
+        client.table("actuaciones")
+        .select("fecha_actuacion, actuacion")
+        .eq("proceso_id", proceso_id)
+        .limit(5000)
+        .execute()
+    )
+    return {(r["fecha_actuacion"], r["actuacion"]) for r in (res.data or [])}
+
+
+def guardar_historial(client: Client, proceso_id: int, items: list[tuple[str, str]]) -> None:
+    """Guarda actuaciones antiguas como ya conocidas (sin resumen y sin notificar)."""
+    if not items:
+        return
+    filas = [
+        {
+            "proceso_id": proceso_id,
+            "fecha_actuacion": fecha,
+            "actuacion": texto,
+            "resumen_json": None,
+            "notificado": True,
+        }
+        for fecha, texto in items
+    ]
+    try:
+        client.table("actuaciones").insert(filas).execute()
+    except Exception:  # noqa: BLE001 - si el lote falla, se intenta una por una
+        for fila in filas:
+            try:
+                client.table("actuaciones").insert(fila).execute()
+            except Exception:  # noqa: BLE001
+                logger.warning("No se pudo guardar una actuación del historial", exc_info=True)
+
+
+def marcar_historial_cargado(client: Client, proceso_id: int) -> None:
+    client.table("procesos").update({"historial_cargado": True}).eq("id", proceso_id).execute()
+
+
+def actuaciones_recientes(client: Client, proceso_ids: list[int], desde_iso: str) -> list[dict[str, Any]]:
+    """Actuaciones analizadas (con resumen) guardadas desde `desde_iso`. Excluye el historial inicial."""
+    if not proceso_ids:
+        return []
+    res = (
+        client.table("actuaciones")
+        .select("proceso_id, fecha_actuacion, resumen_json, created_at")
+        .in_("proceso_id", proceso_ids)
+        .gte("created_at", desde_iso)
+        .not_.is_("resumen_json", "null")
+        .order("created_at", desc=True)
         .execute()
     )
     return res.data or []
