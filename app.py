@@ -1,4 +1,4 @@
-"""Claria Radar · Aplicación web (Streamlit) multiusuario.
+"""Claria Faro · Aplicación web (Streamlit) multiusuario.
 
 Ejecutar con:  streamlit run app.py
 
@@ -7,6 +7,8 @@ y vigila sus procesos. La seguridad de datos la garantiza Supabase (RLS):
 cada sesión solo puede leer y escribir lo suyo.
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -19,11 +21,35 @@ import engine  # noqa: E402
 import wpp  # noqa: E402
 
 # --------------------------------------------------------------------------- #
+# Recursos de marca (carpeta assets/). Si falta alguno, la app sigue funcionando.
+# --------------------------------------------------------------------------- #
+ASSETS = Path(__file__).parent / "assets"
+
+
+def recurso(nombre: str) -> str | None:
+    """Ruta de un archivo de assets/ o None si no existe."""
+    ruta = ASSETS / nombre
+    return str(ruta) if ruta.exists() else None
+
+
+def _icono_pagina():
+    """Favicon: la rosa del logo; si no está, el emoji de la balanza."""
+    ruta = recurso("favicon.png")
+    if not ruta:
+        return "⚖️"
+    try:
+        from PIL import Image
+        return Image.open(ruta)
+    except Exception:  # noqa: BLE001
+        return "⚖️"
+
+
+# --------------------------------------------------------------------------- #
 # Configuración de página (primera llamada a Streamlit)
 # --------------------------------------------------------------------------- #
 st.set_page_config(
-    page_title="Claria Radar",
-    page_icon="⚖️",
+    page_title="Claria Faro",
+    page_icon=_icono_pagina(),
     layout="centered",
     initial_sidebar_state="auto",
 )
@@ -57,6 +83,9 @@ h1, h2, h3 {
 
 /* Quita el menú y el pie de Streamlit para que se vea como producto propio */
 #MainMenu, footer { visibility: hidden; }
+
+/* El logo no debe abrirse en pantalla completa */
+[data-testid="stImage"] button, button[title="View fullscreen"] { display: none !important; }
 
 .claria-header { border-bottom: 2px solid var(--tinta); padding-bottom: 0.6rem; margin-bottom: 1.4rem; }
 .claria-header h1 { margin: 0; padding: 0; font-size: 2.1rem; }
@@ -137,10 +166,21 @@ def cliente_supabase():
 # Acceso: ingresar / crear cuenta / recuperar contraseña
 # --------------------------------------------------------------------------- #
 def vista_acceso(sb) -> None:
-    encabezado(
-        "⚖️ Claria Radar",
-        "Te avisamos por WhatsApp cuando tu proceso judicial tiene novedades, en lenguaje claro.",
-    )
+    logo = recurso("logo.png")
+    if logo:
+        col_logo, col_texto = st.columns([1, 2.6], vertical_alignment="center")
+        with col_logo:
+            st.image(logo, width=150)
+        with col_texto:
+            encabezado(
+                "Claria Faro",
+                "Te avisamos por WhatsApp cuando tu proceso judicial tiene novedades, en lenguaje claro.",
+            )
+    else:
+        encabezado(
+            "⚖️ Claria Faro",
+            "Te avisamos por WhatsApp cuando tu proceso judicial tiene novedades, en lenguaje claro.",
+        )
     if st.session_state.pop("sesion_expirada", False):
         st.warning("⚠️ Tu sesión expiró. Vuelve a ingresar.")
     if st.session_state.pop("clave_cambiada", False):
@@ -213,7 +253,7 @@ def vista_acceso(sb) -> None:
                 clave_n = st.text_input("Contraseña (mínimo 8 caracteres)", type="password", key="reg_clave")
                 clave_r = st.text_input("Repite la contraseña", type="password", key="reg_clave2")
                 acepto = st.checkbox(
-                    "Entiendo que Claria Radar es una herramienta informativa: no reemplaza "
+                    "Entiendo que Claria Faro es una herramienta informativa: no reemplaza "
                     "la revisión del expediente oficial ni la asesoría de un abogado."
                 )
                 crear = st.form_submit_button("Crear mi cuenta", type="primary", use_container_width=True)
@@ -303,7 +343,7 @@ def _mostrar_actuacion(a: dict) -> None:
 
 
 def vista_procesos(sb, perfil: dict) -> None:
-    encabezado("📋 Mis procesos", "Los expedientes que Claria Radar vigila por ti.")
+    encabezado("📋 Mis procesos", "Los expedientes que Claria Faro vigila por ti.")
 
     try:
         procesos = db.obtener_procesos(sb)
@@ -588,7 +628,12 @@ def main() -> None:
         st.stop()
 
     with st.sidebar:
-        st.markdown("## ⚖️ Claria Radar")
+        logo_claro = recurso("logo_claro.png")
+        if logo_claro:
+            st.image(logo_claro, width=150)
+            st.markdown("## Claria Faro")
+        else:
+            st.markdown("## ⚖️ Claria Faro")
         st.caption(user["email"])
         st.divider()
         seleccion = st.radio(
