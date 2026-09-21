@@ -11,17 +11,18 @@ from typing import Any
 
 from supabase import Client
 
+import calendario
 import db
 import wpp
 
-COLOMBIA = timezone(timedelta(hours=-5))  # Colombia no tiene horario de verano
+COLOMBIA = calendario.COLOMBIA
 _DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 _MESES = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
 ]
 
-DIAS_PENDIENTES = 14   # cuánto tiempo atrás se recuerdan las acciones con término
+DIAS_VENTANA = 120     # cuánto tiempo atrás se buscan actuaciones con término (cubre términos largos)
 MAX_NOVEDADES = 5
 MAX_PENDIENTES = 3
 MAX_PROCESOS = 8
@@ -65,20 +66,34 @@ def armar_texto(procesos: list[dict[str, Any]], recientes: list[dict[str, Any]],
             f"✅ *Todo tranquilo.* Ninguno de tus {n} proceso(s) tuvo novedades {periodo}."
         )
 
-    corte = (ahora - timedelta(days=DIAS_PENDIENTES)).date().isoformat()
-    pendientes = []
+    # Vencimientos próximos: fechas calculadas por calendario.py; solo los que aún no vencen
+    procesos_por_id = {p["id"]: p for p in procesos}
+    venc = []
     for a in recientes:
-        r = a.get("resumen_json") or {}
-        if r.get("requiere_accion") and int(r.get("dias_termino") or 0) > 0 and a["fecha_actuacion"] >= corte:
-            pendientes.append((a, r))
-    if pendientes:
-        lineas += ["", "⏳ *Acciones por atender (términos referenciales):*"]
-        for a, r in pendientes[:MAX_PENDIENTES]:
-            accion = wpp._recortar(r.get("accion_sugerida") or "Revisar la actuación", 90)
+        p = procesos_por_id.get(a["proceso_id"])
+        if not p:
+            continue
+        v = calendario.calcular(a["fecha_actuacion"], a.get("resumen_json"), etiquetas[p["id"]],
+                                wpp.formatear_radicado(p["radicado"]))
+        if v and v.fecha and v.fecha >= ahora.date():
+            venc.append((v, a))
+    venc.sort(key=lambda x: x[0].fecha)
+    if venc:
+        lineas += ["", "⏳ *Vencimientos próximos:*"]
+        for v, a in venc[:MAX_PENDIENTES]:
+            r_json = a.get("resumen_json") or {}
+            accion = wpp._recortar(r_json.get("accion_sugerida") or "Revisar la actuación", 70)
+            cuando = calendario.en_dias(v.fecha, ahora.date())
+            aprox = " aprox." if v.origen == "estimada" else ""
+            urgente = "🔴 " if (v.fecha - ahora.date()).days <= 2 else ""
             lineas.append(
-                f"• {etiquetas.get(a['proceso_id'], 'Proceso')}: {accion} "
-                f"({r['dias_termino']} días desde el {a['fecha_actuacion']})"
+                f"• {urgente}{etiquetas[a['proceso_id']]}: {accion} — vence{aprox} "
+                f"{calendario.fmt_fecha(v.fecha)} ({cuando})"
             )
+        if len(venc) > MAX_PENDIENTES:
+            lineas.append(f"• …y {len(venc) - MAX_PENDIENTES} más en la app")
+        if any(v.origen == "estimada" for v, _ in venc):
+            lineas.append("_Fechas estimadas: confírmalas en el expediente._")
 
     lineas += ["", f"📁 *Vigilando {len(procesos)} proceso(s):*"]
     for p in procesos[:MAX_PROCESOS]:
@@ -92,6 +107,6 @@ def armar_texto(procesos: list[dict[str, Any]], recientes: list[dict[str, Any]],
 
 def construir_resumen(client: Client, procesos: list[dict[str, Any]], ahora: datetime | None = None) -> str:
     ahora = ahora or datetime.now(COLOMBIA)
-    desde = (ahora - timedelta(days=DIAS_PENDIENTES)).astimezone(timezone.utc).isoformat()
+    desde = (ahora - timedelta(days=DIAS_VENTANA)).astimezone(timezone.utc).isoformat()
     recientes = db.actuaciones_recientes(client, [p["id"] for p in procesos], desde)
     return armar_texto(procesos, recientes, ahora)

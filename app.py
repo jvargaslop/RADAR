@@ -8,6 +8,7 @@ cada sesión solo puede leer y escribir lo suyo.
 """
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -16,6 +17,7 @@ load_dotenv()  # antes de importar módulos que leen el entorno
 
 import streamlit as st  # noqa: E402
 
+import calendario  # noqa: E402
 import db  # noqa: E402
 import engine  # noqa: E402
 import wpp  # noqa: E402
@@ -329,7 +331,38 @@ def vista_acceso(sb) -> None:
 # --------------------------------------------------------------------------- #
 # Mis procesos
 # --------------------------------------------------------------------------- #
-def _mostrar_actuacion(a: dict) -> None:
+NOTA_FECHAS = (
+    "Las fechas **estimadas** cuentan días hábiles (sin sábados, domingos ni festivos de Colombia) desde el día "
+    "hábil siguiente a la actuación. No consideran cierres del despacho ni la vacancia judicial. "
+    "**Confírmalas siempre en el expediente oficial.**"
+)
+
+
+def _vencimiento_de(a: dict, proceso: dict):
+    """Vencimiento de una actuación (la fecha la calcula calendario.py, no la IA)."""
+    radicado = wpp.formatear_radicado(proceso["radicado"])
+    return calendario.calcular(
+        a["fecha_actuacion"], a.get("resumen_json"), proceso.get("alias") or radicado, radicado
+    )
+
+
+def _botones_calendario(v, actuacion_id: int, prefijo: str) -> None:
+    """Añadir a Google Calendar o descargar .ics (Apple, Outlook, Google)."""
+    c1, c2 = st.columns(2)
+    with c1:
+        st.link_button("📆 Google Calendar", calendario.url_google_calendar(v), use_container_width=True)
+    with c2:
+        st.download_button(
+            "⬇️ Apple / Outlook (.ics)",
+            calendario.crear_ics(v, f"{actuacion_id}@claria-faro"),
+            file_name=f"vencimiento-{v.fecha.isoformat()}.ics",
+            mime="text/calendar",
+            key=f"{prefijo}_ics_{actuacion_id}",
+            use_container_width=True,
+        )
+
+
+def _mostrar_actuacion(a: dict, proceso: dict) -> None:
     r = a.get("resumen_json") or {}
     if not r:  # actuación del historial inicial (sin análisis)
         st.markdown(f"⚪ **{a['fecha_actuacion']} · Historial**")
@@ -340,6 +373,62 @@ def _mostrar_actuacion(a: dict) -> None:
     st.write(r.get("resumen_ejecutivo") or a["actuacion"])
     if r.get("requiere_accion"):
         st.caption(f"👉 {r.get('accion_sugerida')}")
+        v = _vencimiento_de(a, proceso)
+        if v and v.fecha:
+            etiqueta = "Vence aprox." if v.origen == "estimada" else "Fecha indicada"
+            vigente = v.fecha >= calendario.hoy()
+            cuando = calendario.en_dias(v.fecha) if vigente else "ya pasó"
+            st.markdown(f"🗓️ **{etiqueta}: {calendario.fmt_fecha(v.fecha)}** · {cuando}")
+            if vigente:
+                _botones_calendario(v, a["id"], "hist")
+        elif v and v.aviso:
+            st.warning(f"⚠️ {v.aviso}")
+
+
+def _bloque_vencimientos(sb, procesos: list[dict]) -> None:
+    """Próximos vencimientos de todos los procesos, con botones de calendario."""
+    try:
+        desde = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
+        filas = db.actuaciones_recientes(sb, [p["id"] for p in procesos], desde)
+    except Exception:  # noqa: BLE001 - bloque accesorio: nunca debe romper la pantalla
+        return
+
+    por_id = {p["id"]: p for p in procesos}
+    hoy = calendario.hoy()
+    proximos, avisos = [], []
+    for a in filas:
+        p = por_id.get(a["proceso_id"])
+        if not p:
+            continue
+        v = _vencimiento_de(a, p)
+        if v and v.fecha and v.fecha >= hoy:
+            proximos.append((v, a, p))
+        elif v and v.aviso:
+            try:
+                reciente = (hoy - date.fromisoformat(a["fecha_actuacion"])).days <= 60
+            except ValueError:
+                reciente = False
+            if reciente:
+                avisos.append((v, p))
+
+    if not proximos and not avisos:
+        return
+
+    st.subheader("📆 Próximos vencimientos")
+    proximos.sort(key=lambda x: x[0].fecha)
+    for v, a, p in proximos[:8]:
+        r = a.get("resumen_json") or {}
+        aprox = " (aprox.)" if v.origen == "estimada" else ""
+        with st.container(border=True):
+            st.markdown(f"**{calendario.fmt_fecha(v.fecha)}**{aprox} · {calendario.en_dias(v.fecha)}")
+            st.caption(f"📁 {p.get('alias') or wpp.formatear_radicado(p['radicado'])} — {r.get('accion_sugerida') or 'Revisar la actuación'}")
+            _botones_calendario(v, a["id"], "venc")
+    if len(proximos) > 8:
+        st.caption(f"…y {len(proximos) - 8} más.")
+    for v, p in avisos[:3]:
+        st.warning(f"⚠️ {p.get('alias') or wpp.formatear_radicado(p['radicado'])}: {v.aviso}")
+    st.caption(NOTA_FECHAS)
+    st.divider()
 
 
 def vista_procesos(sb, perfil: dict) -> None:
@@ -356,6 +445,8 @@ def vista_procesos(sb, perfil: dict) -> None:
         return
 
     st.caption(f"{len(procesos)} de {perfil.get('max_procesos', 3)} procesos de tu plan ({perfil.get('plan', 'gratis')})")
+
+    _bloque_vencimientos(sb, procesos)
 
     for p in procesos:
         pausado = p.get("estado") == "pausado"
@@ -385,7 +476,7 @@ def vista_procesos(sb, perfil: dict) -> None:
                     if not actuaciones:
                         st.info("Todavía no hay actuaciones guardadas. Ejecuta una revisión.")
                     for a in actuaciones:
-                        _mostrar_actuacion(a)
+                        _mostrar_actuacion(a, p)
 
             st.divider()
             b1, b2 = st.columns(2)

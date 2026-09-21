@@ -3,18 +3,23 @@
 Schema de salida:
     {
       "tipo_auto": str,
-      "resumen_ejecutivo": str,   # máx. 35 palabras, lenguaje claro
+      "resumen_ejecutivo": str,   # máx. 35 palabras (70 si requiere_accion), lenguaje claro
       "requiere_accion": bool,
       "accion_sugerida": str,
-      "dias_termino": int         # 0 si no hay término identificable
+      "dias_termino": int,        # días hábiles concedidos; 0 si no hay término en días
+      "fecha_limite": str         # AAAA-MM-DD solo si el texto la indica; "" si no
     }
+
+La IA NO calcula fechas: las fechas de vencimiento se calculan en calendario.py.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import time
+from datetime import date
 from typing import Any
 
 from dotenv import load_dotenv
@@ -28,7 +33,9 @@ logger = logging.getLogger(__name__)
 # Si ninguno de estos existe, se descubren automáticamente los "flash" disponibles para tu clave.
 MODELOS_POR_DEFECTO = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
 _EXCLUIR = ("image", "tts", "live", "audio", "robotics", "omni", "transcribe", "embedding", "thinking", "exp")
-MAX_PALABRAS_RESUMEN = 35
+MAX_PALABRAS_RESUMEN = 35          # avisos informativos
+MAX_PALABRAS_CON_ACCION = 70       # cuando alguna parte debe actuar
+MAX_DIAS_TERMINO = 200             # más que esto casi seguro no son días hábiles
 REINTENTOS_POR_MODELO = 2
 
 SYSTEM_INSTRUCTION = (
@@ -42,10 +49,11 @@ PROMPT_TEMPLATE = """Analiza la siguiente actuación judicial y responde ÚNICAM
 con exactamente estas claves:
 
 - "tipo_auto": string. Clasificación corta (ej. "Auto admisorio", "Fija audiencia", "Traslado", "Sentencia", "Requerimiento", "Trámite interno").
-- "resumen_ejecutivo": string. Máximo {max_palabras} palabras, lenguaje claro para una persona no abogada.
+- "resumen_ejecutivo": string. Lenguaje claro para una persona no abogada. Máximo {max_palabras} palabras; si "requiere_accion" es true puedes usar hasta {max_palabras_accion} para explicar qué debe hacerse y en qué plazo. Menciona consecuencias solo si el texto las indica.
 - "requiere_accion": boolean. true si alguna parte debe hacer algo (responder, aportar, asistir, recurrir, etc.).
-- "accion_sugerida": string. Qué hacer en concreto; si no hay nada, "Ninguna por ahora."
-- "dias_termino": integer. Días (hábiles, según la norma colombiana aplicable) que hay para actuar. Usa 0 si no hay un término identificable en el texto.
+- "accion_sugerida": string. Qué hacer en concreto, en una frase; si no hay nada, "Ninguna por ahora."
+- "dias_termino": integer. Número de DÍAS que el texto concede para actuar. Si el texto dice solo "días", se entienden hábiles. Usa 0 si el texto no fija un término en días, o si el término está en meses, años, horas o "días calendario" (en ese caso explícalo en "accion_sugerida"). No calcules ni supongas términos que el texto no diga.
+- "fecha_limite": string en formato AAAA-MM-DD. Solo si el texto indica una fecha concreta (día, mes y año) para actuar o asistir, por ejemplo una audiencia. Si no la indica completa, usa "". No calcules fechas.
 
 Contexto del proceso: {contexto}
 
@@ -78,11 +86,23 @@ def _modelos() -> list[str]:
     return list(dict.fromkeys(lista))  # sin duplicados, conserva el orden
 
 
+_ABREVIATURAS = {"art", "arts", "núm", "num", "inc", "no", "dr", "dra", "sr", "sra", "sres", "pág", "ss"}
+
+
 def _limitar_palabras(texto: str, maximo: int = MAX_PALABRAS_RESUMEN) -> str:
+    """Recorta a `maximo` palabras, preferiblemente terminando en una oración completa."""
     palabras = (texto or "").split()
     if len(palabras) <= maximo:
         return " ".join(palabras)
-    return " ".join(palabras[:maximo]).rstrip(".,;:") + "…"
+    corte = " ".join(palabras[:maximo])
+    for m in reversed(list(re.finditer(r"\.(?=\s|$)", corte))):
+        anterior = re.search(r"(\w+)$", corte[: m.start()])
+        if anterior and anterior.group(1).lower() in _ABREVIATURAS:
+            continue  # "art." no es fin de oración
+        if m.end() >= len(corte) * 0.6:
+            return corte[: m.end()]
+        break
+    return corte.rstrip(".,;:") + "…"
 
 
 def _normalizar(data: Any) -> dict[str, Any]:
@@ -100,13 +120,23 @@ def _normalizar(data: Any) -> dict[str, Any]:
         dias = max(0, int(data.get("dias_termino") or 0))
     except (TypeError, ValueError):
         dias = 0
+    if dias > MAX_DIAS_TERMINO:
+        dias = 0
 
+    fecha_limite = str(data.get("fecha_limite") or "").strip()[:10]
+    try:
+        date.fromisoformat(fecha_limite)
+    except ValueError:
+        fecha_limite = ""
+
+    limite = MAX_PALABRAS_CON_ACCION if requiere else MAX_PALABRAS_RESUMEN
     return {
         "tipo_auto": str(data.get("tipo_auto") or "Sin clasificar").strip(),
-        "resumen_ejecutivo": _limitar_palabras(str(data.get("resumen_ejecutivo") or "")),
+        "resumen_ejecutivo": _limitar_palabras(str(data.get("resumen_ejecutivo") or ""), limite),
         "requiere_accion": bool(requiere),
         "accion_sugerida": str(data.get("accion_sugerida") or "Ninguna por ahora.").strip(),
         "dias_termino": dias,
+        "fecha_limite": fecha_limite,
     }
 
 
@@ -118,6 +148,7 @@ def _resumen_de_respaldo(texto: str) -> dict[str, Any]:
         "requiere_accion": False,
         "accion_sugerida": "No se pudo analizar con IA: revisa la actuación directamente en el expediente.",
         "dias_termino": 0,
+        "fecha_limite": "",
     }
 
 
@@ -189,6 +220,7 @@ def analizar_actuacion(texto_actuacion: str, contexto: str = "") -> dict[str, An
     _configurar()
     prompt = PROMPT_TEMPLATE.format(
         max_palabras=MAX_PALABRAS_RESUMEN,
+        max_palabras_accion=MAX_PALABRAS_CON_ACCION,
         contexto=contexto or "No especificado",
         texto=texto_actuacion,
     )

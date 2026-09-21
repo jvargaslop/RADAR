@@ -12,6 +12,8 @@ from urllib.parse import quote
 
 import requests
 
+import calendario
+
 logger = logging.getLogger(__name__)
 
 CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
@@ -81,7 +83,7 @@ def enviar_prueba(telefono: str, api_key: str) -> bool:
     """Mensaje corto para que el cliente confirme que la conexión funciona."""
     mensaje = "\n".join(
         [
-            "⚖️ *CLARIA · Radar*",
+            "⚖️ *CLARIA · Faro*",
             LINEA,
             "✅ *¡Conexión exitosa!*",
             "Desde ahora recibirás aquí las novedades de tus procesos, explicadas en lenguaje claro.",
@@ -188,18 +190,40 @@ def formatear_tarjeta(
     requiere = bool(resumen.get("requiere_accion"))
     dias = int(resumen.get("dias_termino") or 0)
 
+    # El vencimiento lo calcula calendario.py (la IA no calcula fechas)
+    venc = calendario.calcular(fecha, resumen, _limpiar(alias) or formatear_radicado(radicado), formatear_radicado(radicado))
+
     if requiere:
-        semaforo = "🔴" if 0 < dias <= 3 else "🟠" if 0 < dias <= 10 else "🟡"
+        restantes = (venc.fecha - calendario.hoy()).days if venc and venc.fecha else dias
+        semaforo = "🔴" if restantes <= 3 else "🟠" if restantes <= 10 else "🟡"
+        if not (venc and venc.fecha) and dias <= 0:
+            semaforo = "🟡"   # sin plazo identificable
         estado = f"{semaforo} *ACCIÓN REQUERIDA*"
     else:
         estado = "🟢 *Sin acción requerida*"
 
-    que_paso = _recortar(resumen.get("resumen_ejecutivo") or actuacion, 450)
+    que_paso = _recortar(resumen.get("resumen_ejecutivo") or actuacion, 600)
     accion = _recortar(resumen.get("accion_sugerida") or "Ninguna por ahora.", 300)
+
+    lineas_vencimiento: list[str] = []
+    if venc and venc.fecha:
+        if venc.origen == "estimada":
+            lineas_vencimiento += [
+                f"⏳ *Término:* {venc.dias} días hábiles",
+                f"🗓️ *Vence aprox.:* {calendario.fmt_fecha(venc.fecha)}",
+                "_Fecha estimada: confírmala en el expediente._",
+            ]
+        else:
+            lineas_vencimiento.append(f"🗓️ *Fecha indicada:* {calendario.fmt_fecha(venc.fecha)}")
+        lineas_vencimiento += ["📆 *Añadir al calendario:*", calendario.url_google_calendar(venc)]
+    elif venc and venc.aviso:
+        lineas_vencimiento += [f"⏳ *Término:* {venc.dias} días hábiles", f"⚠️ {venc.aviso}"]
+    elif requiere and dias > 0:
+        lineas_vencimiento.append(f"⏳ *Término:* {dias} días (hábiles, referencial)")
 
     def armar(con_partes: bool, con_clase: bool) -> str:
         lineas = [
-            "⚖️ *CLARIA · Radar*",
+            "⚖️ *CLARIA · Faro*",
             LINEA,
             f"📁 *Proceso:* {_limpiar(alias) or 'Sin alias'}",
             f"🔢 *Radicado:* {formatear_radicado(radicado)}",
@@ -223,8 +247,7 @@ def formatear_tarjeta(
             estado,
             f"👉 {accion}",
         ]
-        if requiere and dias > 0:
-            lineas.append(f"⏳ *Término:* {dias} días (hábiles, referencial)")
+        lineas += lineas_vencimiento
         lineas += [LINEA, "_Verifica siempre en el expediente oficial._"]
         return "\n".join(lineas)
 

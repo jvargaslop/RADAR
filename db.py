@@ -1,4 +1,4 @@
-"""Capa de datos (Supabase) para Claria Radar · versión multiusuario.
+"""Capa de datos (Supabase) para Claria Faro · versión multiusuario.
 
 Dos tipos de cliente:
   - crear_cliente_anon():     para la app web. Cada sesión inicia sesión con su
@@ -408,7 +408,7 @@ def actuaciones_recientes(client: Client, proceso_ids: list[int], desde_iso: str
         return []
     res = (
         client.table("actuaciones")
-        .select("proceso_id, fecha_actuacion, resumen_json, created_at")
+        .select("id, proceso_id, fecha_actuacion, resumen_json, created_at")
         .in_("proceso_id", proceso_ids)
         .gte("created_at", desde_iso)
         .not_.is_("resumen_json", "null")
