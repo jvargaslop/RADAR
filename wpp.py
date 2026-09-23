@@ -105,6 +105,15 @@ def formatear_radicado(radicado: str) -> str:
     return f"{r[:5]}-{r[5:7]}-{r[7:9]}-{r[9:12]}-{r[12:16]}-{r[16:21]}-{r[21:]}"
 
 
+def enmascarar_telefono(telefono: str | None) -> str:
+    """+573158501046 -> +57 ••• ••• 1046. Muestra el indicativo y los últimos 4 dígitos."""
+    t = re.sub(r"\s+", "", telefono or "")
+    if len(t) < 6:
+        return "—"
+    indicativo = t[:3] if t.startswith("+57") else t[:1]
+    return f"{indicativo} ••• ••• {t[-4:]}"
+
+
 _SIGLAS_MAYUS = {"sa", "sas", "ltda", "eps", "ips", "esp", "eu"}
 
 
@@ -157,9 +166,7 @@ def formatear_partes_compacto(partes: str | None, max_items: int = 2, max_nombre
     lineas: list[str] = []
     for it in items[:max_items]:
         rol, _, nombre = it.partition(":") if ":" in it else ("", "", it)
-        nombre = _legible(nombre)
-        if len(nombre) > max_nombre:
-            nombre = nombre[: max_nombre - 1].rstrip() + "…"
+        nombre = _recortar_palabra(_legible(nombre), max_nombre)
         lineas.append(f"   • {_legible(rol)}: {nombre}" if rol else f"   • {nombre}")
     resto = len(items) - max_items
     if resto > 0:
@@ -170,6 +177,57 @@ def formatear_partes_compacto(partes: str | None, max_items: int = 2, max_nombre
 def _recortar(texto: str | None, maximo: int) -> str:
     t = _limpiar(texto)
     return t if len(t) <= maximo else t[: maximo - 1].rstrip() + "…"
+
+
+def _recortar_palabra(texto: str | None, maximo: int) -> str:
+    """Como _recortar, pero nunca corta una palabra a la mitad."""
+    t = _limpiar(texto)
+    if len(t) <= maximo:
+        return t
+    corte = t[:maximo]
+    if " " in corte:
+        corte = corte.rsplit(" ", 1)[0]
+    return corte.rstrip(",.;:") + "…"
+
+
+def _partes_dict(partes: str | None) -> list[tuple[str, str]]:
+    """'Demandante: A | Demandado: B' -> [('demandante', 'A'), ('demandado', 'B')]."""
+    items = [x.strip() for x in (partes or "").split("|") if x.strip()]
+    pares = []
+    for it in items:
+        if ":" in it:
+            rol, nombre = it.split(":", 1)
+            pares.append((rol.strip().lower(), _legible(nombre)))
+    return pares
+
+
+def titulo_proceso(alias: str | None, partes: str | None, radicado_fmt: str, max_total: int = 56) -> str:
+    """Título para mostrar un proceso cuando no tiene alias: 'Demandante c. Demandado',
+    con cada nombre acortado en una palabra completa (nunca a la mitad). Si no hay
+    partes identificables, usa el radicado con formato oficial."""
+    if alias and alias.strip():
+        return alias.strip()
+
+    pares = _partes_dict(partes)
+
+    def buscar(clave: str) -> str | None:
+        for rol, nombre in pares:
+            if clave in rol:
+                return nombre
+        return None
+
+    demandante = buscar("demandante")
+    demandado = buscar("demandado")
+    if not demandante and not demandado and pares:
+        demandante = pares[0][1]
+        demandado = pares[1][1] if len(pares) > 1 else None
+
+    mitad = max(max_total // 2 - 2, 12)
+    if demandante and demandado:
+        return f"{_recortar_palabra(demandante, mitad)} c. {_recortar_palabra(demandado, mitad)}"
+    if demandante:
+        return _recortar_palabra(demandante, max_total)
+    return radicado_fmt
 
 
 def formatear_tarjeta(

@@ -1,4 +1,4 @@
-"""Motor de revisión de Claria Radar (compartido por la app web y el worker).
+"""Motor de revisión de Claria Faro (compartido por la app web y el worker).
 
 Flujo por proceso:
     pendientes -> consulta (watcher) -> novedades -> Gemini (ai) -> Supabase (db) -> WhatsApp (wpp)

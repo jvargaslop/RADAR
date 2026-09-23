@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+!_env.example
+PSW.txt
+SUPABASE.txt
+__pycache__/
+*.pyc
+.venv/
+.streamlit/secrets.toml
+*.db
+*.sqlite
+*.sqlite3
+*.key
+*.pem

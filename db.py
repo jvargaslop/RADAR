@@ -19,6 +19,8 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
+import crypto_util
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -194,10 +196,18 @@ def cambiar_clave_con_codigo(client: Client, email: str, codigo: str, nueva: str
 # --------------------------------------------------------------------------- #
 # Perfil (WhatsApp + plan)
 # --------------------------------------------------------------------------- #
+def _descifrar_perfil(perfil: dict[str, Any]) -> dict[str, Any]:
+    """Descifra teléfono y clave de CallMeBot al leer el perfil (ver crypto_util)."""
+    perfil = dict(perfil)
+    perfil["telefono"] = crypto_util.descifrar(perfil.get("telefono"))
+    perfil["callmebot_apikey"] = crypto_util.descifrar(perfil.get("callmebot_apikey"))
+    return perfil
+
+
 def obtener_perfil(client: Client, user_id: str) -> dict[str, Any]:
     res = client.table("perfiles").select("*").eq("user_id", user_id).limit(1).execute()
     if res.data:
-        return res.data[0]
+        return _descifrar_perfil(res.data[0])
     return {"user_id": user_id, **PERFIL_POR_DEFECTO}
 
 
@@ -208,20 +218,24 @@ def guardar_perfil(
     callmebot_apikey: Optional[str],
     resumen_diario: bool = True,
 ) -> None:
+    """Guarda el perfil. El teléfono y la clave de CallMeBot se cifran en reposo
+    (ver crypto_util.py); en la base de datos nunca quedan en texto plano si
+    FERNET_KEY está configurada."""
     client.table("perfiles").update(
         {
-            "telefono": telefono,
-            "callmebot_apikey": callmebot_apikey,
+            "telefono": crypto_util.cifrar(telefono),
+            "callmebot_apikey": crypto_util.cifrar(callmebot_apikey),
             "resumen_diario": resumen_diario,
         }
     ).eq("user_id", user_id).execute()
 
 
 def obtener_usuarios_con_whatsapp(client: Client) -> list[dict[str, Any]]:
-    """(Worker) Perfiles que ya configuraron su número y su clave."""
+    """(Worker) Perfiles que ya configuraron su número y su clave, ya descifrados."""
     res = client.table("perfiles").select("*").execute()
+    perfiles = [_descifrar_perfil(p) for p in (res.data or [])]
     return [
-        p for p in (res.data or [])
+        p for p in perfiles
         if (p.get("telefono") or "").strip() and (p.get("callmebot_apikey") or "").strip()
     ]
 
@@ -262,14 +276,63 @@ def obtener_procesos(
     return q.order("id").execute().data or []
 
 
-def cambiar_estado_proceso(client: Client, proceso_id: int, estado: str) -> None:
+class NoAutorizadoError(Exception):
+    """La operación no afectó ninguna fila: el proceso no es del usuario o no existe."""
+
+
+def cambiar_estado_proceso(client: Client, proceso_id: int, user_id: str, estado: str) -> None:
+    """Cambia el estado de un proceso. Filtra por `id` Y por `user_id`: aunque Row Level
+    Security ya aísla los datos en Supabase, esta segunda comprobación en el servidor
+    evita que un error de configuración de RLS permita operar procesos ajenos."""
     if estado not in {"activo", "pausado"}:
         raise ValueError("Estado inválido")
-    client.table("procesos").update({"estado": estado}).eq("id", proceso_id).execute()
+    res = (
+        client.table("procesos").update({"estado": estado})
+        .eq("id", proceso_id).eq("user_id", user_id).execute()
+    )
+    if not res.data:
+        raise NoAutorizadoError(f"El proceso {proceso_id} no pertenece a este usuario.")
 
 
-def eliminar_proceso(client: Client, proceso_id: int) -> None:
-    client.table("procesos").delete().eq("id", proceso_id).execute()
+def actualizar_situacion_proceso(client: Client, proceso_id: int, user_id: str, situacion: str) -> None:
+    """'en_tramite' o 'archivado'. Distinto de `estado` (activo/pausado), que dice si
+    Claria Faro está revisando el proceso, no en qué punto va el proceso mismo."""
+    if situacion not in {"en_tramite", "archivado"}:
+        raise ValueError("Situación inválida")
+    res = (
+        client.table("procesos").update({"situacion": situacion})
+        .eq("id", proceso_id).eq("user_id", user_id).execute()
+    )
+    if not res.data:
+        raise NoAutorizadoError(f"El proceso {proceso_id} no pertenece a este usuario.")
+
+
+def contar_no_leidas(client: Client, proceso_ids: list[int]) -> dict[int, int]:
+    """Cuántas actuaciones analizadas (con resumen) sin leer tiene cada proceso."""
+    if not proceso_ids:
+        return {}
+    res = (
+        client.table("actuaciones")
+        .select("proceso_id")
+        .in_("proceso_id", proceso_ids)
+        .is_("leida_en", "null")
+        .not_.is_("resumen_json", "null")
+        .execute()
+    )
+    conteo: dict[int, int] = {pid: 0 for pid in proceso_ids}
+    for fila in res.data or []:
+        conteo[fila["proceso_id"]] = conteo.get(fila["proceso_id"], 0) + 1
+    return conteo
+
+
+def eliminar_proceso(client: Client, proceso_id: int, user_id: str) -> None:
+    """Elimina un proceso. Filtra por `id` Y por `user_id` (ver nota en cambiar_estado_proceso)."""
+    res = (
+        client.table("procesos").delete()
+        .eq("id", proceso_id).eq("user_id", user_id).execute()
+    )
+    if not res.data:
+        raise NoAutorizadoError(f"El proceso {proceso_id} no pertenece a este usuario.")
 
 
 def actualizar_info_proceso(client: Client, proceso_id: int, info: dict[str, str]) -> None:
@@ -416,3 +479,41 @@ def actuaciones_recientes(client: Client, proceso_ids: list[int], desde_iso: str
         .execute()
     )
     return res.data or []
+
+
+# --------------------------------------------------------------------------- #
+# Novedades (página de inicio: todas las actuaciones analizadas de un usuario)
+# --------------------------------------------------------------------------- #
+def obtener_novedades(client: Client, proceso_ids: list[int], limite: int = 100) -> list[dict[str, Any]]:
+    """Actuaciones analizadas (con resumen) de varios procesos, más recientes primero.
+    Excluye el historial inicial (guardado sin `resumen_json`)."""
+    if not proceso_ids:
+        return []
+    res = (
+        client.table("actuaciones")
+        .select("*")
+        .in_("proceso_id", proceso_ids)
+        .not_.is_("resumen_json", "null")
+        .order("fecha_actuacion", desc=True)
+        .order("id", desc=True)
+        .limit(limite)
+        .execute()
+    )
+    return res.data or []
+
+
+def marcar_leida(client: Client, actuacion_id: int, leida: bool = True) -> None:
+    """Marca (o desmarca) una actuación como leída. RLS impide tocar actuaciones ajenas."""
+    from datetime import datetime, timezone
+    valor = datetime.now(timezone.utc).isoformat() if leida else None
+    client.table("actuaciones").update({"leida_en": valor}).eq("id", actuacion_id).execute()
+
+
+# --------------------------------------------------------------------------- #
+# Consentimiento de tratamiento de datos
+# --------------------------------------------------------------------------- #
+def guardar_consentimiento(client: Client, user_id: str) -> None:
+    from datetime import datetime, timezone
+    client.table("perfiles").update(
+        {"consentimiento_datos_en": datetime.now(timezone.utc).isoformat()}
+    ).eq("user_id", user_id).execute()

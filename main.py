@@ -1,4 +1,4 @@
-"""Claria Radar · Worker automático (revisa los procesos de TODOS los clientes).
+"""Claria Faro · Worker automático (revisa los procesos de TODOS los clientes).
 
 Uso:      python main.py            -> revisa novedades y envía las alertas
           python main.py --resumen  -> envía el resumen diario de las 8 a.m.

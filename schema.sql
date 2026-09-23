@@ -34,11 +34,16 @@ create table if not exists perfiles (
   plan              text   not null default 'gratis',
   max_procesos      int    not null default 3,     -- límite del plan
   resumen_diario    boolean not null default true,  -- mensaje de las 8 a.m.
+  consentimiento_datos_en timestamptz,               -- cuándo aceptó la Política de Tratamiento de Datos
   created_at        timestamptz not null default now()
 );
 
 -- Para bases ya creadas antes de esta versión
 alter table perfiles add column if not exists resumen_diario boolean not null default true;
+alter table perfiles add column if not exists consentimiento_datos_en timestamptz;
+
+-- Para bases ya creadas antes de esta versión: seguimiento de lectura de actuaciones
+alter table actuaciones add column if not exists leida_en timestamptz;
 
 -- Crea el perfil automáticamente cuando alguien se registra
 create or replace function crear_perfil() returns trigger
@@ -72,7 +77,9 @@ create table if not exists procesos (
   historial_cargado      boolean not null default false,  -- ya se guardó el historial inicial
   ultima_actuacion_fecha date,
   estado                 text not null default 'activo'
-                         check (estado in ('activo', 'pausado')),
+                         check (estado in ('activo', 'pausado')),      -- ¿Claria Faro lo está revisando?
+  situacion              text not null default 'en_tramite'
+                         check (situacion in ('en_tramite', 'archivado')), -- ¿en qué va el proceso mismo?
   created_at             timestamptz not null default now(),
   unique (user_id, radicado)   -- dos clientes pueden vigilar el mismo radicado
 );
@@ -82,6 +89,12 @@ alter table procesos add column if not exists despacho      text;
 alter table procesos add column if not exists partes        text;
 alter table procesos add column if not exists clase_proceso text;
 alter table procesos add column if not exists historial_cargado boolean not null default false;
+alter table procesos add column if not exists situacion text not null default 'en_tramite';
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'procesos_situacion_check') then
+    alter table procesos add constraint procesos_situacion_check check (situacion in ('en_tramite', 'archivado'));
+  end if;
+end $$;
 
 create table if not exists actuaciones (
   id               bigint generated always as identity primary key,
@@ -90,6 +103,7 @@ create table if not exists actuaciones (
   actuacion        text   not null,
   resumen_json     jsonb,
   notificado       boolean not null default false,
+  leida_en         timestamptz,   -- cuándo el usuario la marcó como leída en "Novedades"
   created_at       timestamptz not null default now()
 );
 
@@ -153,7 +167,10 @@ create policy actuaciones_propias on actuaciones
 -- El cliente solo puede editar su teléfono, su clave y si quiere el resumen diario; NUNCA su plan ni su límite
 revoke all on perfiles from anon, authenticated;
 grant select on perfiles to authenticated;
-grant update (telefono, callmebot_apikey, resumen_diario) on perfiles to authenticated;
+grant update (telefono, callmebot_apikey, resumen_diario, consentimiento_datos_en) on perfiles to authenticated;
+
+-- El cliente puede marcar sus propias actuaciones como leídas, nada más
+grant update (leida_en) on actuaciones to authenticated;
 
 -- El worker usa la clave service_role, que ignora RLS. Nunca la pongas en la app web.
 

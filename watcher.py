@@ -15,7 +15,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://consultaprocesos.ramajudicial.gov.co:448/api/v2"
-HEADERS = {"User-Agent": "Mozilla/5.0 (ClariaRadar)", "Accept": "application/json"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (ClariaFaro)", "Accept": "application/json"}
 TIMEOUT = 30
 
 

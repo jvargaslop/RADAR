@@ -16,20 +16,11 @@ import db
 import wpp
 
 COLOMBIA = calendario.COLOMBIA
-_DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
-_MESES = [
-    "enero", "febrero", "marzo", "abril", "mayo", "junio",
-    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
-]
 
 DIAS_VENTANA = 120     # cuánto tiempo atrás se buscan actuaciones con término (cubre términos largos)
 MAX_NOVEDADES = 5
 MAX_PENDIENTES = 3
 MAX_PROCESOS = 8
-
-
-def _fecha_larga(d: datetime) -> str:
-    return f"{_DIAS[d.weekday()]} {d.day} de {_MESES[d.month - 1]}"
 
 
 def _creado(actuacion: dict[str, Any]) -> datetime:
@@ -49,7 +40,7 @@ def armar_texto(procesos: list[dict[str, Any]], recientes: list[dict[str, Any]],
 
     novedades = [a for a in recientes if _creado(a) >= desde]
 
-    lineas = ["☀️ *CLARIA · Resumen diario*", f"📅 {_fecha_larga(ahora)}", wpp.LINEA]
+    lineas = ["☀️ *CLARIA · Resumen diario*", f"📅 {calendario.fmt_fecha(ahora.date())}", wpp.LINEA]
 
     if novedades:
         lineas.append(f"🔔 *Novedades {periodo} ({len(novedades)}):*")

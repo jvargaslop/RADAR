@@ -28,8 +28,7 @@ COLOMBIA = timezone(timedelta(hours=-5))  # Colombia no tiene horario de verano
 MAX_DIAS_TERMINO = 200                    # más que esto es casi seguro un error de lectura
 MAX_DIAS_FECHA_TEXTO = 730                # una fecha en el texto no puede estar a más de 2 años
 
-_DIAS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
-_MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+_MESES_ABR = ["ene.", "feb.", "mar.", "abr.", "may.", "jun.", "jul.", "ago.", "sep.", "oct.", "nov.", "dic."]
 
 _FESTIVOS: dict[int, Any] = {}
 
@@ -85,7 +84,33 @@ def cruza_vacancia(inicio: date, fin: date) -> bool:
 # Formato
 # --------------------------------------------------------------------------- #
 def fmt_fecha(d: date) -> str:
-    return f"{_DIAS[d.weekday()]} {d.day} {_MESES[d.month - 1]} {d.year}"
+    """Formato de fecha único de toda la app: '7 sep. 2026'."""
+    return f"{d.day} {_MESES_ABR[d.month - 1]} {d.year}"
+
+
+def fmt_hora(dt: datetime) -> str:
+    """'9:00 a. m.' / '3:45 p. m.'"""
+    meridiano = "a. m." if dt.hour < 12 else "p. m."
+    hora12 = dt.hour % 12 or 12
+    return f"{hora12}:{dt.minute:02d} {meridiano}"
+
+
+def fmt_fecha_hora(dt: datetime) -> str:
+    """'7 sep. 2026, 9:00 a. m.'"""
+    return f"{fmt_fecha(dt.date())}, {fmt_hora(dt)}"
+
+
+def desde_iso(valor: Any) -> Optional[datetime]:
+    """Convierte un timestamp ISO (de Supabase, en UTC) a hora de Colombia."""
+    if not valor:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(valor).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(COLOMBIA)
 
 
 def en_dias(d: date, desde: Optional[date] = None) -> str:
@@ -129,7 +154,7 @@ def calcular(
     contexto = [
         f"Proceso: {alias}",
         f"Radicado: {radicado_fmt}",
-        f"Qué hacer: {resumen.get('accion_sugerida') or '—'}",
+        f"Qué hacer: {resumen.get('accion_sugerida') or 'sin especificar'}",
     ]
 
     # 1) Fecha indicada por el propio texto (más precisa que cualquier cálculo)
@@ -137,11 +162,11 @@ def calcular(
     if explicita and base <= explicita <= base + timedelta(days=MAX_DIAS_FECHA_TEXTO):
         return Vencimiento(
             fecha=explicita, origen="texto", dias=0, aviso="",
-            titulo=_recortar(f"Fecha: {alias} — {accion}", 90),
+            titulo=_recortar(f"Fecha: {alias}: {accion}", 90),
             detalle_corto="Fecha indicada en la actuación. Confirma en el expediente oficial.",
             detalle_largo="\n".join(
                 contexto + ["Fecha indicada en el texto de la actuación.",
-                            "Confirma siempre en el expediente oficial.", "— Claria Faro"]
+                            "Confirma siempre en el expediente oficial.", "Claria Faro"]
             ),
         )
 
@@ -162,14 +187,14 @@ def calcular(
         )
     return Vencimiento(
         fecha=fin, origen="estimada", dias=dias, aviso="",
-        titulo=_recortar(f"Vence: {alias} — {accion}", 90),
+        titulo=_recortar(f"Vence: {alias}: {accion}", 90),
         detalle_corto="Fecha estimada. Confirma en el expediente oficial.",
         detalle_largo="\n".join(
             contexto + [
                 f"Fecha estimada: {dias} días hábiles contados desde el día hábil siguiente al {base.isoformat()}, "
                 "sin sábados, domingos ni festivos de Colombia. No considera cierres del despacho ni vacancia judicial.",
                 "Confirma siempre en el expediente oficial.",
-                "— Claria Faro",
+                "Claria Faro",
             ]
         ),
     )

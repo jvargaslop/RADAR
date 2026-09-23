@@ -33,6 +33,11 @@ Está pensado para dos públicos: **abogados** que no quieren revisar portales t
 - **Sin avalancha de mensajes**: al registrar un proceso solo se notifica lo más reciente; el historial se guarda en silencio.
 - **Detección robusta**: una actuación es nueva si no está guardada, sin depender de su fecha, para no perder autos publicados con fecha atrasada.
 - **Planes con límite** de procesos por cuenta, validado en la base de datos.
+- **Interfaz por páginas** (Novedades, Mis procesos, Agregar proceso, Alertas, Planes) con marcado de
+  leído, situación del proceso (en trámite/archivado) separada de la vigilancia (activa/pausada), y
+  radicado con botón de copiar.
+- **Diseño plano sin emojis** en la interfaz (los mensajes de WhatsApp sí los usan, es su propio
+  lenguaje): estados como etiquetas de texto, íconos de Material Symbols, tema nativo de Streamlit.
 - **Resiliencia**: si Gemini falla se guarda un resumen de respaldo; si WhatsApp falla, el aviso se reintenta en el siguiente ciclo.
 
 ## Ejemplo de aviso
@@ -122,14 +127,20 @@ Las fechas calculadas siempre se muestran como **estimadas**. No consideran cier
 ├── wpp.py                 # Formato y envío de mensajes de WhatsApp
 ├── resumen_diario.py      # Resumen de las 8 a.m.
 ├── calendario.py          # Fechas de vencimiento, enlaces de Google Calendar y archivos .ics
-├── db.py                  # Capa de datos (Supabase)
+├── db.py                  # Capa de datos (Supabase): consultas, filtro por user_id, cifrado del perfil
+├── crypto_util.py         # Cifrado (Fernet) del teléfono y la clave de CallMeBot en reposo
+├── ui_helpers.py          # Componentes de interfaz: copiar radicado, etiquetas de estado
 ├── schema.sql             # Tablas, políticas RLS y límites por plan
 ├── assets/                # Logo y favicon
-├── .streamlit/config.toml # Tema de la app
+├── .streamlit/config.toml # Tema (theme + theme.sidebar; sin CSS a mano)
+├── tests/                 # Pruebas de aislamiento entre usuarios (pytest)
+│   ├── fake_supabase.py   # Doble de prueba del cliente de Supabase, con RLS simulado
+│   └── test_seguridad.py
 ├── .github/workflows/
 │   ├── revision.yml       # Revisión cada 6 horas
 │   └── resumen-diario.yml # Resumen de lunes a viernes, 8 a.m. (Colombia)
 ├── requirements.txt
+├── requirements-dev.txt   # Lo anterior + pytest, para correr las pruebas
 └── _env.example           # Plantilla de variables de entorno
 ```
 
@@ -168,8 +179,19 @@ Copia `_env.example` a `.env` y complétalo:
 | `SUPABASE_SERVICE_KEY` | **solo el worker** | **Sí** |
 | `GEMINI_API_KEY` | app y worker | **Sí** |
 | `GEMINI_MODEL` | opcional, fuerza un modelo | No |
+| `FERNET_KEY` | app y worker | **Sí** |
 
-La clave de CallMeBot y el teléfono **no van aquí**: cada usuario los configura dentro de la app, en *Mi WhatsApp*.
+La clave de CallMeBot y el teléfono **no van aquí**: cada usuario los configura dentro de la app, en *Alertas*.
+
+`FERNET_KEY` cifra en reposo el teléfono y la clave de CallMeBot de cada usuario (ver `crypto_util.py`).
+Sin ella, la app funciona pero guarda esos dos campos sin cifrar. Genera una con:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Configúrala **antes** de tener usuarios reales y no la cambies después: sin la clave original, los
+valores ya cifrados no se pueden volver a leer.
 
 ### 4. Ejecutar en local
 
@@ -187,27 +209,51 @@ python main.py --resumen  # envía el resumen diario
 
 ### 5. Publicar la app
 
-Puedes desplegarla en [Streamlit Community Cloud](https://streamlit.io/cloud) o en cualquier hosting que ejecute Streamlit. Configura como secretos `SUPABASE_URL`, `SUPABASE_ANON_KEY` y `GEMINI_API_KEY`. **No** pongas ahí la clave de servicio.
+Puedes desplegarla en [Streamlit Community Cloud](https://streamlit.io/cloud) o en cualquier hosting que ejecute Streamlit. Configura como secretos `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `GEMINI_API_KEY` y `FERNET_KEY`. **No** pongas ahí la clave de servicio.
 
 ### 6. Revisión automática
 
-En GitHub, ve a **Settings → Secrets and variables → Actions → Repository secrets** y crea `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` y `GEMINI_API_KEY`. Los dos workflows de `.github/workflows/` hacen el resto. Puedes lanzarlos a mano desde la pestaña **Actions** para probarlos.
+En GitHub, ve a **Settings → Secrets and variables → Actions → Repository secrets** y crea `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `GEMINI_API_KEY` y `FERNET_KEY`. Los dos workflows de `.github/workflows/` hacen el resto. Puedes lanzarlos a mano desde la pestaña **Actions** para probarlos.
+
+### 7. Pruebas
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+
+Las pruebas comprueban, con un doble de Supabase que simula Row Level Security, que un usuario nunca
+puede leer ni modificar los procesos, actuaciones o el perfil de otro (ver `tests/test_seguridad.py`).
 
 ## Cómo conecta su WhatsApp cada usuario
 
 1. Sigue la [guía oficial de CallMeBot](https://www.callmebot.com/blog/free-api-whatsapp-messages/) para autorizar el envío de mensajes y obtener su clave.
-2. En la app, abre **Mi WhatsApp**, pega su número y su clave y guarda.
+2. En la app, abre **Alertas**, pega su número y su clave y guarda.
 3. Pulsa **Enviar mensaje de prueba** para confirmar.
 
 ## Seguridad y privacidad
 
-- **Aislamiento por usuario** con Row Level Security: cada sesión solo lee y escribe sus propios datos.
-- **Plan y límite no editables** por el cliente: solo puede modificar su teléfono, su clave y la preferencia del resumen diario.
+- **Aislamiento por usuario** en dos capas: Row Level Security en Supabase, más un filtro explícito por
+  `user_id` en el servidor para pausar, archivar y eliminar un proceso (`db.py`), verificado con pruebas
+  automatizadas (`tests/test_seguridad.py`).
+- **Plan y límite no editables** por el cliente: solo puede modificar su teléfono, su clave y sus preferencias.
 - La clave `service_role` de Supabase solo se usa en el worker, nunca en la app web.
-- **Nunca** subas `.env` ni archivos con claves al repositorio. El `.gitignore` los excluye, pero no protege si subes archivos desde la web de GitHub.
-- Las claves de CallMeBot se guardan **en texto plano** en `perfiles`, protegidas por RLS. Si vas a operar con clientes reales, considera cifrarlas (por ejemplo, con Supabase Vault).
+- **Nunca** subas `.env`, `.streamlit/secrets.toml` ni archivos con claves al repositorio. El
+  `.gitignore` los excluye, pero no protege si subes archivos desde la web de GitHub: revisa el
+  historial de commits si alguna vez se subieron por error, y rota esas claves.
+- **Contraseñas:** las administra Supabase Auth (GoTrue), que las guarda cifradas con bcrypt. Este
+  proyecto nunca ve ni almacena la contraseña de nadie.
+- **Teléfono y clave de CallMeBot cifrados en reposo** con Fernet (`crypto_util.py`), usando la clave
+  maestra `FERNET_KEY`. Sin esa variable configurada, se guardan sin cifrar: revisa la sección de
+  variables de entorno antes de operar con datos reales.
+- El teléfono se muestra siempre enmascarado en la interfaz (`wpp.enmascarar_telefono`).
+- El registro exige un consentimiento explícito y separado para el tratamiento de datos (Ley 1581 de
+  2012), con su fecha guardada en `perfiles.consentimiento_datos_en`; el detalle está en la página
+  **Privacidad** de la propia app.
 - El texto de las actuaciones se envía a Google Gemini para generar el resumen.
-- Quien despliega el proyecto es responsable del tratamiento de datos personales conforme a la normativa aplicable (en Colombia, la Ley 1581 de 2012).
+- Quien despliega el proyecto es responsable del tratamiento de datos personales conforme a la
+  normativa aplicable (en Colombia, la Ley 1581 de 2012) y de revisar que el contenido de la página
+  **Privacidad** refleje su operación real.
 
 ## Limitaciones conocidas
 
@@ -223,13 +269,16 @@ En GitHub, ve a **Settings → Secrets and variables → Actions → Repository 
 - [ ] Revisión más frecuente en horario judicial
 - [ ] Canal de respaldo por correo electrónico
 - [ ] Migración a la API oficial de WhatsApp Business
-- [ ] Cifrado de las claves de los usuarios
+- [x] Cifrado en reposo del teléfono y la clave de CallMeBot (Fernet)
 - [x] Fechas de vencimiento con días hábiles, festivos y enlace de calendario
+- [x] Interfaz por páginas, sin emojis, con etiquetas de estado y filtro explícito por `user_id`
+- [x] Pruebas automatizadas de aislamiento entre usuarios, con CI en cada push
 - [ ] Reglas por tipo de término y vacancias distintas a la de fin de año
 - [ ] Usar las fechas de inicio y fin de término del portal, si la fuente las expone de forma confiable
 - [ ] Paginación completa de actuaciones
 - [ ] Cobro y gestión de planes
-- [ ] Pruebas automatizadas y CI
+- [ ] Página de Privacidad revisada por un abogado, y consentimiento exigido también a cuentas antiguas
+- [ ] Rotar o retirar el `.env` que haya quedado alguna vez en el historial de Git (ver Seguridad)
 
 ## Contribuir
 
