@@ -1,0 +1,22 @@
+# Copia este archivo como ".env" y completa los valores. NUNCA subas .env a Git.
+
+# --- Supabase (Project Settings -> API Keys) ---
+SUPABASE_URL=https://xxxxxxxx.supabase.co
+# Clave "publishable" (o "anon"): la usa la app web (segura gracias a RLS)
+SUPABASE_ANON_KEY=
+# Clave "secret" (o "service_role"): SOLO para el worker (main.py). No la pongas en la app web.
+SUPABASE_SERVICE_KEY=
+
+# --- IA (la pone el dueño del servicio; los clientes no necesitan clave de Gemini) ---
+GEMINI_API_KEY=
+# GEMINI_MODEL=   # opcional: fuerza un modelo concreto si Google retira el que se usa
+
+# --- Cifrado en reposo del teléfono y la clave de CallMeBot de cada usuario ---
+# Genera una con:  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Sin esta clave, la app funciona pero guarda esos dos campos SIN CIFRAR (ver crypto_util.py).
+# Configúrala siempre antes de operar con datos reales, y NUNCA la cambies una vez haya datos
+# guardados: sin la clave original, esos datos ya cifrados no se pueden volver a leer.
+FERNET_KEY=
+
+# Nota: la clave y el teléfono de CallMeBot NO van aquí.
+# Cada cliente los configura dentro de la app, en "Alertas".
