@@ -7,9 +7,9 @@ como copiar al portapapeles) queden documentados y probados en un solo lugar.
 from __future__ import annotations
 
 import html as _html
+from urllib.parse import quote
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 # --------------------------------------------------------------------------- #
 # Copiar al portapapeles
@@ -18,31 +18,30 @@ def radicado_copiable(radicado_formateado: str, key: str, height: int = 40) -> N
     """Muestra el radicado como texto normal (no como bloque de código) con un
     botón que lo copia al portapapeles.
 
-    Usa `navigator.clipboard`, que requiere HTTPS: funciona en la app publicada,
-    pero no siempre en `http://localhost` según el navegador. Si falla, el radicado
-    sigue siendo visible y seleccionable a mano como cualquier texto.
+    Se renderiza con `st.iframe` sobre un `data:` URI (no `st.components.v1.html`,
+    que Streamlit retira). Usa `navigator.clipboard`, que requiere HTTPS: funciona
+    en la app publicada, pero no siempre en `http://localhost` según el navegador.
+    Si falla, el radicado sigue siendo visible y seleccionable a mano como cualquier texto.
     """
     texto = _html.escape(radicado_formateado)
-    components.html(
-        f"""
-        <div id="fila-{key}" style="display:flex;align-items:center;gap:10px;
+    contenido = f"""<!doctype html><html><body style="margin:0">
+        <div style="display:flex;align-items:center;gap:10px;
              font-family:-apple-system,'Segoe UI',Roboto,sans-serif;">
           <span style="font-size:0.95rem;color:#1A1D21;letter-spacing:0.2px;">{texto}</span>
           <button onclick="
               navigator.clipboard.writeText('{texto}').then(() => {{
-                const b = document.getElementById('btn-{key}');
+                const b = document.getElementById('btn');
                 const t = b.innerText; b.innerText = 'Copiado';
                 setTimeout(() => {{ b.innerText = t; }}, 1500);
               }});"
-            id="btn-{key}"
+            id="btn"
             style="border:1px solid #D8DBE0;background:#FFFFFF;border-radius:6px;
                    padding:4px 10px;cursor:pointer;color:#3B4652;font-size:0.78rem;">
             Copiar
           </button>
         </div>
-        """,
-        height=height,
-    )
+        </body></html>"""
+    st.iframe(src=f"data:text/html;charset=utf-8,{quote(contenido)}", height=height)
 
 
 # --------------------------------------------------------------------------- #

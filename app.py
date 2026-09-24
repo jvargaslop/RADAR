@@ -64,18 +64,57 @@ st.set_page_config(
     initial_sidebar_state="auto",
 )
 
-# El look plano (fondos, bordes, colores del sidebar) vive en .streamlit/config.toml,
-# con [theme] y [theme.sidebar]. Aquí solo se ocultan dos elementos que config.toml
-# no controla: el menú/pie de Streamlit y el botón de pantalla completa del logo.
-st.markdown(
-    """
-    <style>
-    #MainMenu, footer { visibility: hidden; }
-    [data-testid="stImage"] button, button[title="View fullscreen"] { display: none !important; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# --------------------------------------------------------------------------- #
+# Modo oscuro (interruptor en el sidebar, ver main()) y ajustes de contraste
+# --------------------------------------------------------------------------- #
+MODO_OSCURO_KEY = "modo_oscuro"
+if MODO_OSCURO_KEY not in st.session_state:
+    st.session_state[MODO_OSCURO_KEY] = False
+
+# Colores base de .streamlit/config.toml (aquí solo como referencia para el CSS)
+_AZUL_GRIS = "#3D5A73"   # primaryColor: botones primarios
+_NAVY = "#1B2A41"        # sidebar
+
+_CSS_SIEMPRE = """
+#MainMenu, footer { visibility: hidden; }
+[data-testid="stImage"] button, button[title="View fullscreen"] { display: none !important; }
+
+/* Contraste: texto secundario (captions) y botones no primarios, que por
+   defecto pueden quedar en gris claro sobre blanco y costar de leer. */
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] * { color: #4B5563 !important; }
+button[kind="secondary"], .stButton>button[kind="secondary"] {
+    color: #1A1D21 !important; border-color: #C9CDD3 !important;
+}
+button:disabled, .stButton>button:disabled { color: #6B7280 !important; opacity: 1 !important; }
+"""
+
+_CSS_OSCURO = """
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] { background-color: #12181F !important; }
+.stApp, [data-testid="stMain"] * { color: #E7E9EC; }
+[data-testid="stHeader"] { background-color: #12181F !important; }
+[data-testid="stVerticalBlockBorderWrapper"], [data-testid="stExpander"],
+[data-testid="stForm"], [data-testid="stPopoverBody"], [data-testid="stDialog"] > div {
+    background-color: #1B222B !important; border-color: #333B45 !important;
+}
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] * { color: #9AA3AE !important; }
+[data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea,
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+    background-color: #1B222B !important; color: #E7E9EC !important; border-color: #333B45 !important;
+}
+button[kind="secondary"], .stButton>button[kind="secondary"] {
+    background-color: #1B222B !important; color: #E7E9EC !important; border-color: #3B4552 !important;
+}
+hr { border-color: #333B45 !important; }
+/* El sidebar ya es oscuro por [theme.sidebar] en config.toml: se deja igual. */
+"""
+
+
+def _inyectar_estilo() -> None:
+    css = _CSS_SIEMPRE + (_CSS_OSCURO if st.session_state[MODO_OSCURO_KEY] else "")
+    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+
+
+_inyectar_estilo()
 
 
 # --------------------------------------------------------------------------- #
@@ -121,6 +160,32 @@ def _botones_calendario(v, actuacion_id: int, prefijo: str) -> None:
             key=f"{prefijo}_ics_{actuacion_id}",
             use_container_width=True,
         )
+
+
+def _ejecutar_primera_revision(sb, perfil: dict, proceso: dict, titulo: str) -> None:
+    """Consulta la Rama Judicial de inmediato para UN proceso y envía la alerta si hay
+    algo nuevo, en lugar de esperar a la próxima revisión automática (cada 6 horas).
+    Se usa al registrar un proceso y al reactivar su seguimiento."""
+    log: list[tuple[str, str]] = []
+    with st.spinner(f"Consultando {titulo} en la Rama Judicial..."):
+        stats = engine.revisar_proceso(sb, proceso, perfil.get("telefono"), perfil.get("callmebot_apikey"), log)
+
+    if stats["enviadas"]:
+        st.success(f"Listo: se envió la alerta de {titulo} a tu WhatsApp.", icon=":material/check_circle:")
+    elif stats["nuevas"]:
+        st.warning(
+            f"Se encontró una novedad en {titulo}, pero el mensaje no se pudo enviar. "
+            "Se reintentará en la próxima revisión automática.",
+            icon=":material/warning:",
+        )
+    for nivel, mensaje in log:
+        texto = mensaje.replace("**", "")
+        if nivel == "warn" and not stats["nuevas"]:
+            st.warning(texto, icon=":material/warning:")
+        elif nivel == "err":
+            st.error(texto, icon=":material/error:")
+        elif nivel == "info":
+            st.info(texto, icon=":material/info:")
 
 
 NOTA_FECHAS = (
@@ -528,18 +593,8 @@ def _dialogo_eliminar(sb, user_id: str, proceso: dict, titulo: str) -> None:
                 st.rerun()
 
 
-def _menu_proceso(sb, user_id: str, proceso: dict, titulo: str, activa: bool, en_tramite: bool) -> None:
+def _menu_proceso(sb, user_id: str, proceso: dict, titulo: str, en_tramite: bool) -> None:
     with st.popover("Más", icon=":material/more_vert:"):
-        if st.button("Pausar vigilancia" if activa else "Reanudar vigilancia",
-                     key=f"tog_{proceso['id']}",
-                     icon=":material/visibility_off:" if activa else ":material/visibility:",
-                     use_container_width=True):
-            try:
-                db.cambiar_estado_proceso(sb, proceso["id"], user_id, "pausado" if activa else "activo")
-            except Exception as exc:  # noqa: BLE001
-                st.error(str(exc), icon=":material/error:")
-            else:
-                st.rerun()
         if st.button("Marcar como archivado" if en_tramite else "Marcar en trámite",
                      key=f"sit_{proceso['id']}",
                      icon=":material/inventory_2:" if en_tramite else ":material/gavel:",
@@ -606,13 +661,30 @@ def pagina_procesos() -> None:
                     partes_linea.append(f"{n} sin leer")
                 st.caption(" · ".join(partes_linea))
             with top2:
-                _menu_proceso(sb, user["id"], p, titulo, activa, en_tramite)
+                _menu_proceso(sb, user["id"], p, titulo, en_tramite)
 
-            b1, b2 = st.columns(2)
-            with b1:
-                ui.badge_vigilancia(activa)
-            with b2:
+            c1, c2 = st.columns([2, 1])
+            with c1:
+                seguimiento = st.toggle("Seguimiento activo", value=activa, key=f"vig_{p['id']}")
+            with c2:
                 ui.badge_situacion(en_tramite)
+
+            if seguimiento != activa:
+                try:
+                    db.cambiar_estado_proceso(sb, p["id"], user["id"], "activo" if seguimiento else "pausado")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(str(exc), icon=":material/error:")
+                else:
+                    if seguimiento:
+                        # se acaba de activar: enviar la primera alerta ahora, sin esperar
+                        # a la próxima revisión automática (cada 6 horas)
+                        if whatsapp_configurado(perfil):
+                            _ejecutar_primera_revision(sb, perfil, p, titulo)
+                        else:
+                            st.info("Conecta tu WhatsApp en Alertas para recibir la alerta.",
+                                   icon=":material/info:")
+                    else:
+                        st.caption("Seguimiento pausado.")
 
             ui.radicado_copiable(wpp.formatear_radicado(p["radicado"]), key=f"rad_{p['id']}")
 
@@ -669,28 +741,40 @@ def pagina_agregar() -> None:
         alias = st.text_input("Alias (opcional)", placeholder="Ej. Pérez vs. Gómez")
         enviado = st.form_submit_button("Registrar proceso", type="primary")
 
-    if not enviado:
-        return
-    if not radicado.strip():
-        st.warning("Ingresa el número de radicado.", icon=":material/info:")
-        return
+    if enviado:
+        if not radicado.strip():
+            st.warning("Ingresa el número de radicado.", icon=":material/info:")
+        else:
+            try:
+                with st.spinner("Registrando proceso..."):
+                    proceso = db.registrar_proceso(sb, radicado, alias.strip() or None)
+            except db.RadicadoInvalidoError as exc:
+                st.error(str(exc), icon=":material/error:")
+            except db.ProcesoDuplicadoError as exc:
+                st.warning(str(exc), icon=":material/info:")
+            except db.LimiteProcesosError as exc:
+                st.warning(str(exc), icon=":material/info:")
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"No se pudo registrar el proceso: {exc}", icon=":material/error:")
+            else:
+                st.session_state["proceso_recien_creado"] = proceso
 
-    try:
-        with st.spinner("Registrando proceso..."):
-            proceso = db.registrar_proceso(sb, radicado, alias.strip() or None)
-    except db.RadicadoInvalidoError as exc:
-        st.error(str(exc), icon=":material/error:")
-    except db.ProcesoDuplicadoError as exc:
-        st.warning(str(exc), icon=":material/info:")
-    except db.LimiteProcesosError as exc:
-        st.warning(str(exc), icon=":material/info:")
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"No se pudo registrar el proceso: {exc}", icon=":material/error:")
-    else:
-        st.success(f"Proceso registrado: {wpp.formatear_radicado(proceso['radicado'])}",
+    recien = st.session_state.get("proceso_recien_creado")
+    if recien:
+        titulo = wpp.titulo_proceso(recien.get("alias"), recien.get("partes"),
+                                    wpp.formatear_radicado(recien["radicado"]))
+        st.success(f"Proceso registrado: {wpp.formatear_radicado(recien['radicado'])}",
                   icon=":material/check_circle:")
-        st.info("En la primera revisión te avisaremos de la actuación más reciente del expediente.",
-               icon=":material/info:")
+        if whatsapp_configurado(perfil):
+            st.write(
+                "Puedes esperar a la próxima revisión automática (cada 6 horas) o pedir la primera "
+                "revisión ahora mismo."
+            )
+            if st.button("Ejecutar primera revisión", type="primary", icon=":material/play_arrow:"):
+                _ejecutar_primera_revision(sb, perfil, recien, titulo)
+                st.session_state.pop("proceso_recien_creado", None)
+        else:
+            st.info("Conecta tu WhatsApp en Alertas para recibir la primera alerta.", icon=":material/info:")
 
 
 # --------------------------------------------------------------------------- #
@@ -880,6 +964,7 @@ def main() -> None:
                 st.session_state.pop(clave, None)
             st.rerun()
         st.page_link(PAGINAS["privacidad"], label="Política de datos", icon=":material/lock:")
+        st.toggle("Modo oscuro", key=MODO_OSCURO_KEY)
         st.caption("Herramienta informativa. Verifica siempre en el expediente oficial.")
 
     pg.run()
