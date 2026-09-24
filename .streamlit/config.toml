@@ -4,7 +4,7 @@
 
 [theme]
 base = "light"
-primaryColor = "#7A1F2B"          # vino: botones primarios
+primaryColor = "#3D5A73"          # azul-gris: botones primarios (antes vino #7A1F2B)
 backgroundColor = "#FFFFFF"       # contenido principal: blanco
 secondaryBackgroundColor = "#F7F7F8"  # tarjetas/paneles: gris neutro, no crema
 textColor = "#1A1D21"             # texto neutro, no teñido de azul marino (contraste AA)
