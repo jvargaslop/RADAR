@@ -37,7 +37,10 @@ Está pensado para dos públicos: **abogados** que no quieren revisar portales t
   leído, situación del proceso (en trámite/archivado) separada de la vigilancia (activa/pausada), y
   radicado con botón de copiar.
 - **Diseño plano sin emojis** en la interfaz (los mensajes de WhatsApp sí los usan, es su propio
-  lenguaje): estados como etiquetas de texto, íconos de Material Symbols, tema nativo de Streamlit.
+  lenguaje): estados como etiquetas de texto, íconos de Material Symbols, tema nativo de Streamlit,
+  con un interruptor de **modo oscuro** en el sidebar.
+- **Primera revisión inmediata**: al registrar un proceso, o al reactivar su seguimiento con el
+  interruptor de la tarjeta, se puede pedir la revisión ahora mismo en vez de esperar hasta 6 horas.
 - **Resiliencia**: si Gemini falla se guarda un resumen de respaldo; si WhatsApp falla, el aviso se reintenta en el siguiente ciclo.
 
 ## Ejemplo de aviso

@@ -1,0 +1,22 @@
+# Tema de Claria Faro. Fondo neutro (blanco/gris), sin CSS a mano: el azul marino y
+# el vino de la marca quedan reservados para el sidebar, los botones primarios y las
+# etiquetas de urgencia alta (ver ui_helpers.badge_urgencia), tal como pide el diseño.
+
+[theme]
+base = "light"
+primaryColor = "#3D5A73"          # azul-gris: botones primarios (antes vino #7A1F2B)
+backgroundColor = "#FFFFFF"       # contenido principal: blanco
+secondaryBackgroundColor = "#F7F7F8"  # tarjetas/paneles: gris neutro, no crema
+textColor = "#1A1D21"             # texto neutro, no teñido de azul marino (contraste AA)
+borderColor = "#E3E5E9"
+font = "sans-serif"
+
+[theme.sidebar]
+backgroundColor = "#1B2A41"       # azul marino: reservado para el sidebar
+secondaryBackgroundColor = "#243654"
+textColor = "#F1EDE6"
+primaryColor = "#E9B44C"
+borderColor = "#2F425C"
+
+[client]
+toolbarMode = "minimal"
