@@ -410,6 +410,35 @@ def vista_acceso(sb) -> None:
     st.page_link(PAGINAS["privacidad"], label="Política de Tratamiento de Datos", icon=":material/lock:")
 
 
+@st.dialog("Cambiar contraseña")
+def _dialogo_cambiar_clave(sb) -> None:
+    st.write("Escribe tu nueva contraseña. No necesitas ningún código: ya iniciaste sesión.")
+    nueva = st.text_input("Nueva contraseña (mínimo 8 caracteres)", type="password", key="dlg_clave_nueva")
+    repetir = st.text_input("Repite la nueva contraseña", type="password", key="dlg_clave_rep")
+
+    if nueva and len(nueva) < 8:
+        st.caption("Debe tener al menos 8 caracteres.")
+    elif nueva and repetir and nueva != repetir:
+        st.caption("Las contraseñas no coinciden.")
+
+    valido = len(nueva) >= 8 and nueva == repetir
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancelar", use_container_width=True):
+            st.rerun()
+    with c2:
+        if st.button("Guardar", type="primary", disabled=not valido, use_container_width=True):
+            try:
+                db.cambiar_clave_autenticado(sb, nueva)
+            except db.AuthError as exc:
+                st.error(str(exc), icon=":material/error:")
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"No se pudo cambiar la contraseña: {exc}", icon=":material/error:")
+            else:
+                st.success("Contraseña actualizada.", icon=":material/check_circle:")
+
+
 # --------------------------------------------------------------------------- #
 # Novedades (página de inicio)
 # --------------------------------------------------------------------------- #
@@ -951,6 +980,8 @@ def main() -> None:
         if logo:
             st.image(logo, width=140)
         st.caption(user["email"])
+        if st.button("Cambiar contraseña", icon=":material/key:", use_container_width=True):
+            _dialogo_cambiar_clave(sb)
 
     pg = st.navigation(list(PAGINAS.values()))
 

@@ -193,6 +193,16 @@ def cambiar_clave_con_codigo(client: Client, email: str, codigo: str, nueva: str
         cerrar_sesion(client)  # que ingrese con su nueva contraseña
 
 
+def cambiar_clave_autenticado(client: Client, nueva: str) -> None:
+    """Cambia la contraseña de quien ya tiene sesión iniciada en esta app. No depende
+    del correo: Supabase confía en la sesión activa, así que funciona aunque el envío
+    de correos (confirmación / código de recuperación) esté fallando."""
+    try:
+        client.auth.update_user({"password": nueva})
+    except Exception as exc:  # noqa: BLE001
+        raise AuthError(_traducir_auth(exc)) from exc
+
+
 # --------------------------------------------------------------------------- #
 # Perfil (WhatsApp + plan)
 # --------------------------------------------------------------------------- #
