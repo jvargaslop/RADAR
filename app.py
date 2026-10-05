@@ -11,6 +11,7 @@ su propio formato con emojis (wpp.py); esta interfaz no usa emojis.
 from __future__ import annotations
 
 from datetime import date
+from html import escape as _escape_html
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -79,13 +80,31 @@ _CSS_SIEMPRE = """
 #MainMenu, footer { visibility: hidden; }
 [data-testid="stImage"] button, button[title="View fullscreen"] { display: none !important; }
 
-/* Contraste: texto secundario (captions) y botones no primarios, que por
-   defecto pueden quedar en gris claro sobre blanco y costar de leer. */
+/* Contraste: texto secundario (captions) y botones no primarios del contenido
+   principal, que por defecto pueden quedar en gris claro sobre blanco y costar
+   de leer. Solo fuera del sidebar: ahí los botones tienen su propio estilo abajo. */
 [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] * { color: #4B5563 !important; }
-button[kind="secondary"], .stButton>button[kind="secondary"] {
+[data-testid="stMain"] button[kind="secondary"], [data-testid="stMain"] .stButton>button[kind="secondary"] {
     color: #1A1D21 !important; border-color: #C9CDD3 !important;
 }
 button:disabled, .stButton>button:disabled { color: #6B7280 !important; opacity: 1 !important; }
+
+/* Botones del sidebar: con relleno visible, no un contorno casi invisible sobre el azul marino. */
+[data-testid="stSidebar"] button {
+    background-color: #243654 !important;
+    border: 1px solid #3B4F6B !important;
+    color: #F1EDE6 !important;
+}
+[data-testid="stSidebar"] button:hover {
+    background-color: #2D4160 !important;
+    border-color: #E9B44C !important;
+    color: #FFFFFF !important;
+}
+[data-testid="stSidebar"] button p, [data-testid="stSidebar"] button span { color: inherit !important; }
+
+/* Correo del usuario en el sidebar: se evita que el autolink de markdown lo pinte
+   de azul (fuera de la paleta) y se deja del mismo tono claro que el resto del texto. */
+.correo-usuario { color: #C9D2DC !important; font-size: 0.82rem; margin: -0.3rem 0 0.6rem 0; }
 """
 
 _CSS_OSCURO = """
@@ -979,7 +998,7 @@ def main() -> None:
         logo = recurso("logo_claro.png")
         if logo:
             st.image(logo, width=140)
-        st.caption(user["email"])
+        st.markdown(f'<p class="correo-usuario">{_escape_html(user["email"])}</p>', unsafe_allow_html=True)
         if st.button("Cambiar contraseña", icon=":material/key:", use_container_width=True):
             _dialogo_cambiar_clave(sb)
 
